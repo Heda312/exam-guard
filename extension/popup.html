@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --forest-950: #18392c;
+        --forest-800: #28543f;
+        --sage-200: #dce7d9;
+        --beige-100: #f1ebdd;
+        --beige-50: #fffcf6;
+        --stone-700: #5f665f;
+        --danger-600: #b54745;
+      }
+      body {
+        margin: 0;
+        width: 320px;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: var(--beige-50);
+        color: var(--forest-950);
+      }
+      header {
+        background: linear-gradient(135deg, #18392c, #28543f);
+        color: var(--beige-50);
+        padding: 16px 18px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 15px;
+        letter-spacing: 0.01em;
+      }
+      header p {
+        margin: 4px 0 0;
+        font-size: 11.5px;
+        opacity: 0.75;
+      }
+      main {
+        padding: 16px 18px 18px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 12.5px;
+        padding: 7px 0;
+        border-bottom: 1px solid rgba(24, 57, 44, 0.08);
+      }
+      .row:last-of-type {
+        border-bottom: none;
+      }
+      .label {
+        color: var(--stone-700);
+      }
+      .value {
+        font-weight: 600;
+        text-align: right;
+        word-break: break-word;
+      }
+      .badge {
+        display: inline-block;
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .badge-on {
+        background: rgba(40, 84, 63, 0.14);
+        color: var(--forest-800);
+      }
+      .badge-off {
+        background: rgba(95, 102, 95, 0.14);
+        color: var(--stone-700);
+      }
+      .badge-warn {
+        background: rgba(181, 71, 69, 0.14);
+        color: var(--danger-600);
+      }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        padding: 9px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(24, 57, 44, 0.18);
+        background: var(--sage-200);
+        color: var(--forest-950);
+        font-weight: 600;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #cfdfcb;
+      }
+      .muted {
+        font-size: 11.5px;
+        color: var(--stone-700);
+        margin-top: 12px;
+        line-height: 1.5;
+      }
+      a {
+        color: var(--forest-800);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ExamGuard</h1>
+      <p>Pemantauan aktivitas browser ujian</p>
+    </header>
+    <main>
+      <div class="row">
+        <span class="label">Status</span>
+        <span class="value" id="status">Memuat…</span>
+      </div>
+      <div class="row">
+        <span class="label">Exam ID</span>
+        <span class="value" id="exam">—</span>
+      </div>
+      <div class="row">
+        <span class="label">Sesi peserta</span>
+        <span class="value" id="session">—</span>
+      </div>
+      <div class="row">
+        <span class="label">Event tertunda</span>
+        <span class="value" id="buffered">0</span>
+      </div>
+
+      <button id="stop" type="button">Hentikan pemantauan</button>
+
+      <p class="muted">
+        Extension hanya mencatat perpindahan tab, jendela baru, kehilangan fokus, dan navigasi
+        selama sesi ujian aktif. Riwayat penjelajahan lengkap tidak dikumpulkan.
+      </p>
+      <p class="muted">
+        <a id="open" href="https://exam.heda.my.id/join" target="_blank" rel="noreferrer">
+          Buka halaman peserta
+        </a>
+      </p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

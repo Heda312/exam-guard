@@ -1,0 +1,12 @@
+# Backend data directory
+
+SQLite databases are created here at runtime (`examguard.db`) and are excluded
+from version control. In production the backend uses PostgreSQL instead, so this
+directory stays empty.
+
+To run locally with SQLite, the app creates the file automatically when
+`AUTO_CREATE_TABLES=true`:
+
+```bash
+DATABASE_URL=sqlite:///./data/examguard.db
+```

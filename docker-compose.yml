@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-examguard}
+      POSTGRES_USER: ${POSTGRES_USER:-examguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-examguard} -d ${POSTGRES_DB:-examguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [examguard]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-examguard}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-examguard}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY wajib diisi}
+      SETUP_SECRET: ${SETUP_SECRET:?SETUP_SECRET wajib diisi}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://exam.heda.my.id}
+      COOKIE_SECURE: "true"
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      COOKIE_SAMESITE: lax
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://exam.heda.my.id}
+      PARTICIPANT_IDENTITY_MODE: ${PARTICIPANT_IDENTITY_MODE:-none}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_ALLOWED_DOMAINS: ${GOOGLE_ALLOWED_DOMAINS:-}
+      ALLOWED_EXAM_URL_HOSTS: ${ALLOWED_EXAM_URL_HOSTS:-docs.google.com,forms.gle,forms.google.com}
+      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-false}
+    expose:
+      - "8000"
+    networks: [examguard]
+
+  web:
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    networks: [examguard]
+
+volumes:
+  db_data:
+
+networks:
+  examguard:
+    driver: bridge
