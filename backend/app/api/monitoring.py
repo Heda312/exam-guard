@@ -28,12 +28,20 @@ from ..schemas import (
     IncidentOut,
     IncidentReviewRequest,
     MonitoringEventOut,
+    MonitoringStateOut,
+    MonitoringTimerOut,
     OverviewStats,
     ParticipantCard,
     ParticipantDetail,
 )
 from ..services.exams import ensure_utc, get_active_exam_session, time_remaining_seconds
-from ..services.monitoring import EVENT_SUMMARIES, incident_counts_for_exam_session, latest_event_summary
+from ..services.monitoring import (
+    EVENT_SUMMARIES,
+    incident_counts_for_exam_session,
+    latest_event_map,
+    latest_event_summary,
+    latest_incident_map,
+)
 from ..services.participants import is_online
 from ..ws import envelope, manager
 
@@ -50,9 +58,14 @@ def _build_card(
     ps: ParticipantSession,
     roster: dict[str, ExamParticipant],
     incidents: dict[str, int],
+    *,
+    latest_event: Optional[tuple[Optional[str], Optional[datetime]]] = None,
+    latest_incident: Optional[ViolationIncident] = None,
 ) -> ParticipantCard:
     link = roster.get(ps.participant_id)
-    summary, last_activity = latest_event_summary(db, ps.id)
+    summary, last_activity = (
+        latest_event if latest_event is not None else latest_event_summary(db, ps.id)
+    )
     online = is_online(ps)
     return ParticipantCard(
         participant_session_id=ps.id,
@@ -64,10 +77,82 @@ def _build_card(
         connection_state="ONLINE" if online else "OFFLINE",
         online=online,
         incident_count=incidents.get(ps.id, 0),
+        last_incident_at=ensure_utc(latest_incident.started_at) if latest_incident else None,
+        last_incident_type=latest_incident.incident_type if latest_incident else None,
         last_activity_at=last_activity,
         latest_event_summary=summary,
         last_heartbeat_at=ensure_utc(ps.last_heartbeat_at),
         connected_at=ensure_utc(ps.connected_at),
+    )
+
+
+def _card_sort_key(card: ParticipantCard) -> tuple:
+    return (not card.online, -card.incident_count, card.full_name.lower())
+
+
+def _timer_payload(exam: Exam, exam_session: Optional[ExamSession]) -> MonitoringTimerOut:
+    now = utcnow()
+    if exam_session is None:
+        return MonitoringTimerOut(
+            exam_id=exam.id,
+            status=exam.status,
+            server_time=now,
+            remaining_seconds=0,
+        )
+    return MonitoringTimerOut(
+        exam_id=exam.id,
+        exam_session_id=exam_session.id,
+        status=exam.status,
+        session_status=exam_session.status,
+        server_time=now,
+        started_at=ensure_utc(exam_session.started_at),
+        ends_at=ensure_utc(exam_session.ends_at),
+        remaining_seconds=time_remaining_seconds(exam_session, now),
+    )
+
+
+def _cards_for_exam_session(
+    db: Session, exam: Exam, exam_session: ExamSession
+) -> list[ParticipantCard]:
+    """Build every card with a fixed number of queries (no N+1 per participant)."""
+    sessions = list(
+        db.scalars(
+            select(ParticipantSession)
+            .where(ParticipantSession.exam_session_id == exam_session.id)
+            .order_by(ParticipantSession.created_at)
+        ).all()
+    )
+    if not sessions:
+        return []
+
+    roster = _roster_map(db, exam.id)
+    incident_counts = incident_counts_for_exam_session(db, exam_session.id)
+    latest_events = latest_event_map(db, [ps.id for ps in sessions])
+    latest_incidents = latest_incident_map(db, exam_session.id)
+
+    cards = [
+        _build_card(
+            db,
+            ps,
+            roster,
+            incident_counts,
+            latest_event=latest_events.get(ps.id, (None, None)),
+            latest_incident=latest_incidents.get(ps.id),
+        )
+        for ps in sessions
+    ]
+    cards.sort(key=_card_sort_key)
+    return cards
+
+
+def _incidents_for_exam_session(db: Session, exam_session_id: str) -> list[ViolationIncident]:
+    return list(
+        db.scalars(
+            select(ViolationIncident)
+            .join(ParticipantSession, ParticipantSession.id == ViolationIncident.participant_session_id)
+            .where(ParticipantSession.exam_session_id == exam_session_id)
+            .order_by(ViolationIncident.started_at.desc())
+        ).all()
     )
 
 
@@ -157,49 +242,47 @@ def monitor_participants(
     exam_session = get_active_exam_session(db, exam.id)
     if exam_session is None:
         return []
-    roster = _roster_map(db, exam.id)
-    incidents = incident_counts_for_exam_session(db, exam_session.id)
-    sessions = list(
-        db.scalars(
-            select(ParticipantSession)
-            .where(ParticipantSession.exam_session_id == exam_session.id)
-            .order_by(ParticipantSession.created_at)
-        ).all()
+    return _cards_for_exam_session(db, exam, exam_session)
+
+
+@router.get("/exams/{exam_id}/monitor/state", response_model=MonitoringStateOut)
+def monitor_state(
+    exam_id: str,
+    user: DashboardUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> MonitoringStateOut:
+    """Everything the live dashboard needs in one round-trip."""
+    require_exam_access(db, user, exam_id, "can_view_participants")
+    exam = get_exam_or_404(db, exam_id)
+    exam_session = get_active_exam_session(db, exam.id)
+    if exam_session is None:
+        return MonitoringStateOut(
+            cards=[],
+            incidents=[],
+            timer=_timer_payload(exam, None),
+            server_time=utcnow(),
+        )
+    return MonitoringStateOut(
+        cards=_cards_for_exam_session(db, exam, exam_session),
+        incidents=[
+            IncidentOut.model_validate(incident)
+            for incident in _incidents_for_exam_session(db, exam_session.id)
+        ],
+        timer=_timer_payload(exam, exam_session),
+        server_time=utcnow(),
     )
-    cards = [_build_card(db, ps, roster, incidents) for ps in sessions]
-    cards.sort(key=lambda card: (not card.online, -card.incident_count, card.full_name.lower()))
-    return cards
 
 
-@router.get("/exams/{exam_id}/timer")
+@router.get("/exams/{exam_id}/timer", response_model=MonitoringTimerOut)
 def exam_timer(
     exam_id: str,
     user: DashboardUser,
     db: Annotated[Session, Depends(get_db)],
-) -> dict:
+) -> MonitoringTimerOut:
     require_exam_access(db, user, exam_id, "can_view_exam")
     exam = get_exam_or_404(db, exam_id)
     exam_session = get_active_exam_session(db, exam.id)
-    now = utcnow()
-    if exam_session is None:
-        return {
-            "exam_id": exam.id,
-            "status": exam.status,
-            "server_time": now,
-            "started_at": None,
-            "ends_at": None,
-            "remaining_seconds": 0,
-        }
-    return {
-        "exam_id": exam.id,
-        "exam_session_id": exam_session.id,
-        "status": exam.status,
-        "session_status": exam_session.status,
-        "server_time": now,
-        "started_at": exam_session.started_at,
-        "ends_at": exam_session.ends_at,
-        "remaining_seconds": time_remaining_seconds(exam_session, now),
-    }
+    return _timer_payload(exam, exam_session)
 
 
 @router.get("/participant-sessions/{participant_session_id}", response_model=ParticipantDetail)
@@ -217,7 +300,16 @@ def participant_detail(
 
     roster = _roster_map(db, exam.id)
     incidents_map = incident_counts_for_exam_session(db, exam_session.id)
-    card = _build_card(db, ps, roster, incidents_map)
+    latest_events = latest_event_map(db, [ps.id])
+    latest_incidents = latest_incident_map(db, exam_session.id)
+    card = _build_card(
+        db,
+        ps,
+        roster,
+        incidents_map,
+        latest_event=latest_events.get(ps.id, (None, None)),
+        latest_incident=latest_incidents.get(ps.id),
+    )
 
     events = list(
         db.scalars(

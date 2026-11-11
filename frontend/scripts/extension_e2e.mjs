@@ -12,7 +12,8 @@
  * Usage: node scripts/extension_e2e.mjs http://127.0.0.1:5199
  */
 import puppeteer from "puppeteer-core";
-import { mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const BASE = process.argv[2] ?? "http://127.0.0.1:5199";
@@ -22,13 +23,32 @@ const CHROME =
   process.env.CHROME_PATH ??
   "C:/Users/abisu/AppData/Local/ms-playwright/chromium-1248/chrome-win64/chrome.exe";
 const OUT = path.resolve("..", ".shots-ext");
+// Optional: point at the live SQLite database to exercise the TIME_EXPIRED path.
+// Without it the script verifies the proctor-ended (COMPLETED) overlay instead.
+const E2E_DB = process.env.E2E_DB ?? "";
 
 mkdirSync(OUT, { recursive: true });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const checks = [];
 function check(label, condition, extra = "") {
   checks.push({ label, ok: Boolean(condition) });
   console.log(`[${condition ? "PASS" : "FAIL"}] ${label}${extra ? ` — ${extra}` : ""}`);
+}
+
+async function waitFor(probe, timeoutMs = 10000, intervalMs = 400) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const value = await probe();
+      if (value) return value;
+    } catch {
+      /* retry */
+    }
+    await sleep(intervalMs);
+  }
+  return null;
 }
 
 const manifest = JSON.parse(readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8"));
@@ -71,6 +91,22 @@ async function findWorker() {
 const { target: swTarget, worker } = await findWorker();
 const extensionId = new URL(swTarget.url()).host;
 console.log("extension id:", extensionId);
+
+/** Wake an idle MV3 worker through the page bridge, then re-resolve it. */
+async function getWorker(page) {
+  if (page) {
+    await page
+      .evaluate(() =>
+        window.postMessage(
+          { source: "examguard-web", type: "get_state" },
+          window.location.origin,
+        ),
+      )
+      .catch(() => {});
+    await sleep(400);
+  }
+  return (await findWorker()).worker;
+}
 
 /* ---------------------------------------------------------------- */
 /* 1. Admin prepares an exam with a form URL                        */
@@ -253,14 +289,180 @@ check("badge shows monitoring state", badge === "ON" || /^\d+$/.test(badge), bad
 
 // Backend must agree that the participant is MONITORING.
 const serverState = await adminPage.evaluate(async (examId) => {
-  const response = await fetch(`/api/v1/exams/${examId}/monitor`);
+  const response = await fetch(`/api/v1/exams/${examId}/monitor/state`);
   return response.json();
 }, exam.id);
 check(
   "backend session is MONITORING",
-  serverState[0]?.status === "MONITORING",
-  serverState[0]?.status ?? "none",
+  serverState.cards?.[0]?.status === "MONITORING",
+  serverState.cards?.[0]?.status ?? "none",
 );
+check(
+  "monitor/state bundles cards, incidents and timer",
+  Array.isArray(serverState.cards) &&
+    Array.isArray(serverState.incidents) &&
+    serverState.timer?.remaining_seconds > 0,
+  `cards=${serverState.cards?.length} incidents=${serverState.incidents?.length} timer=${serverState.timer?.remaining_seconds}`,
+);
+
+const overlayBefore = await participantPage.evaluate(
+  () => document.getElementById("examguard-overlay-host") === null,
+);
+check("no warning overlay before a violation", overlayBefore);
+
+/* ---------------------------------------------------------------- */
+/* 6. Realtime card + tab-switch detection + return warning          */
+/* ---------------------------------------------------------------- */
+await adminPage.goto(`${BASE}/monitoring/${exam.id}`, { waitUntil: "networkidle2" });
+await adminPage.waitForSelector(".participant-card", { timeout: 15000 });
+const cardText = await adminPage.$eval(".participant-card", (element) => element.textContent ?? "");
+check(
+  "monitoring card shows the participant",
+  cardText.includes("Alek Nurhabib"),
+  cardText.slice(0, 80),
+);
+
+const liveBadge = await waitFor(
+  () =>
+    adminPage.$eval(".page-header", (element) =>
+      (element.textContent ?? "").includes("Realtime aktif") ? true : null,
+    ),
+  12000,
+);
+check("monitoring dashboard reports an active realtime connection", Boolean(liveBadge));
+
+// Switch to the dashboard tab, then return to the exam tab. The extension must
+// record the switch immediately and raise the pending warning on return.
+await adminPage.bringToFront();
+await sleep(1500);
+await participantPage.bringToFront();
+await sleep(1800);
+
+const overlayAfter = await participantPage.evaluate(() => {
+  const host = document.getElementById("examguard-overlay-host");
+  return host?.shadowRoot?.textContent ?? null;
+});
+check(
+  "warning overlay appears when returning to the exam tab",
+  Boolean(overlayAfter && overlayAfter.includes("Peringatan pelanggaran")),
+  overlayAfter?.slice(0, 90) ?? "none",
+);
+
+const incidentState = await waitFor(async () => {
+  const state = await adminPage.evaluate(async (examId) => {
+    const response = await fetch(`/api/v1/exams/${examId}/monitor/state`);
+    return response.json();
+  }, exam.id);
+  return state.incidents?.length > 0 ? state : null;
+}, 12000);
+check(
+  "backend recorded the fast tab-switch incident",
+  incidentState?.incidents?.length >= 1,
+  `${incidentState?.incidents?.length ?? 0} incident(s)`,
+);
+check(
+  "card incident count reflects the violation",
+  incidentState?.cards?.[0]?.incident_count >= 1,
+  String(incidentState?.cards?.[0]?.incident_count ?? 0),
+);
+check(
+  "card stores the latest incident type",
+  ["TAB_SWITCH", "FOCUS_LOST", "NAVIGATION", "NEW_TAB", "TAB_CLOSED"].includes(
+    incidentState?.cards?.[0]?.last_incident_type ?? "",
+  ),
+  incidentState?.cards?.[0]?.last_incident_type ?? "none",
+);
+
+const cardUpdated = await adminPage
+  .waitForFunction(
+    () => {
+      const card = document.querySelector(".participant-card");
+      return Boolean(card && /\d+\s+insiden/.test(card.textContent ?? ""));
+    },
+    { timeout: 12000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check("monitoring card updates in realtime", cardUpdated);
+
+/* ---------------------------------------------------------------- */
+/* 7. Exam end / time-up overlay                                     */
+/* ---------------------------------------------------------------- */
+await participantPage.bringToFront();
+await sleep(600);
+
+const endsAtInPast = (() => {
+  if (!E2E_DB) return false;
+  if (!existsSync(E2E_DB)) {
+    console.log(`[SKIP] E2E_DB not found: ${E2E_DB}`);
+    return false;
+  }
+  const python = process.env.PYTHON ?? "python";
+  const script = [
+    "import sqlite3, sys",
+    "con = sqlite3.connect(sys.argv[1], timeout=10)",
+    "con.execute(\"update exam_sessions set ends_at = datetime('now','-1 minute') where exam_id = ?\", (sys.argv[2],))",
+    "con.commit()",
+    "con.close()",
+  ].join("\n");
+  try {
+    execFileSync(python, ["-c", script, E2E_DB, exam.id], { stdio: "inherit" });
+    return true;
+  } catch (error) {
+    console.log(`[SKIP] could not rewrite ends_at: ${error}`);
+    return false;
+  }
+})();
+
+if (!endsAtInPast) {
+  await adminPage.evaluate(async (examId) => {
+    const csrf = decodeURIComponent(document.cookie.match(/eg_csrf=([^;]*)/)?.[1] ?? "");
+    await fetch(`/api/v1/exams/${examId}/end`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+    });
+  }, exam.id);
+}
+
+// Wake the worker and force the heartbeat alarm so it observes the new state
+// instead of waiting for the next 30 s tick.
+let liveWorker = await getWorker(adminPage);
+await liveWorker.evaluate(async () => {
+  await chrome.alarms.create("examguard-heartbeat", { when: Date.now() + 100 });
+});
+
+const endOverlay = await waitFor(
+  () =>
+    participantPage.evaluate(() => {
+      const host = document.getElementById("examguard-overlay-host");
+      const text = host?.shadowRoot?.textContent ?? "";
+      return text.includes("Waktu ujian telah habis") || text.includes("Ujian telah berakhir")
+        ? text
+        : null;
+    }),
+  15000,
+  600,
+);
+check(
+  endsAtInPast
+    ? "time-up overlay appears on the exam tab"
+    : "exam-ended overlay appears on the exam tab",
+  Boolean(endOverlay),
+  endOverlay?.slice(0, 90) ?? "none",
+);
+
+liveWorker = await getWorker(adminPage);
+const endedSession = await liveWorker.evaluate(
+  async () => (await chrome.storage.local.get("session")).session ?? null,
+);
+check(
+  "extension stops monitoring and marks the session ended",
+  endedSession?.monitoring === false && endedSession?.ended === true,
+  JSON.stringify({ monitoring: endedSession?.monitoring, ended: endedSession?.ended }),
+);
+
+await participantPage.screenshot({ path: path.join(OUT, "ext-03-warning.png"), fullPage: true });
+await adminPage.screenshot({ path: path.join(OUT, "ext-04-monitoring.png"), fullPage: true });
 
 await browser.close();
 

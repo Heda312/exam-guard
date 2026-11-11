@@ -179,6 +179,13 @@ def incident_counts_for_exam_session(db: Session, exam_session_id: str) -> dict[
     return {row[0]: int(row[1]) for row in rows}
 
 
+def _summarize_event(event_type: str, page_host: Optional[str]) -> str:
+    summary = EVENT_SUMMARIES.get(event_type, event_type)
+    if page_host:
+        summary = f"{summary} · {page_host}"
+    return summary
+
+
 def latest_event_summary(db: Session, participant_session_id: str) -> tuple[Optional[str], Optional[datetime]]:
     event = db.scalar(
         select(MonitoringEvent)
@@ -188,7 +195,61 @@ def latest_event_summary(db: Session, participant_session_id: str) -> tuple[Opti
     )
     if event is None:
         return None, None
-    summary = EVENT_SUMMARIES.get(event.event_type, event.event_type)
-    if event.page_host:
-        summary = f"{summary} · {event.page_host}"
-    return summary, _ensure_utc(event.received_at)
+    return _summarize_event(event.event_type, event.page_host), _ensure_utc(event.received_at)
+
+
+def latest_event_map(
+    db: Session, participant_session_ids: list[str]
+) -> dict[str, tuple[Optional[str], Optional[datetime]]]:
+    """Latest event summary per participant session, in one query.
+
+    Building a monitoring card used to run one (or two) queries per participant;
+    with a full classroom that made every dashboard refresh an N+1 problem.
+    """
+    if not participant_session_ids:
+        return {}
+
+    ranked = (
+        select(
+            MonitoringEvent.participant_session_id.label("participant_session_id"),
+            MonitoringEvent.event_type.label("event_type"),
+            MonitoringEvent.page_host.label("page_host"),
+            MonitoringEvent.received_at.label("received_at"),
+            func.row_number()
+            .over(
+                partition_by=MonitoringEvent.participant_session_id,
+                order_by=MonitoringEvent.received_at.desc(),
+            )
+            .label("row_number"),
+        )
+        .where(MonitoringEvent.participant_session_id.in_(participant_session_ids))
+        .subquery()
+    )
+    rows = db.execute(select(ranked).where(ranked.c.row_number == 1)).all()
+
+    result: dict[str, tuple[Optional[str], Optional[datetime]]] = {}
+    for row in rows:
+        result[row.participant_session_id] = (
+            _summarize_event(row.event_type, row.page_host),
+            _ensure_utc(row.received_at),
+        )
+    return result
+
+
+def latest_incident_map(
+    db: Session, exam_session_id: str
+) -> dict[str, ViolationIncident]:
+    """Most recent incident per participant session, in one query."""
+    incidents = db.scalars(
+        select(ViolationIncident)
+        .join(ParticipantSession, ParticipantSession.id == ViolationIncident.participant_session_id)
+        .where(ParticipantSession.exam_session_id == exam_session_id)
+        .order_by(
+            ViolationIncident.participant_session_id,
+            ViolationIncident.started_at.desc(),
+        )
+    ).all()
+    result: dict[str, ViolationIncident] = {}
+    for incident in incidents:
+        result.setdefault(incident.participant_session_id, incident)
+    return result

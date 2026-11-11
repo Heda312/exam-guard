@@ -169,3 +169,88 @@ def test_monitor_cards_show_connection_state(admin_client: TestClient) -> None:
     cards = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor").json()
     assert cards[0]["status"] == "CONNECTION_LOST"
     assert cards[0]["online"] is False
+
+
+def test_monitor_state_bundles_cards_incidents_and_timer(admin_client: TestClient) -> None:
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+    admin_client.post(
+        f"/api/v1/participant/events?participant_session_id={ps_id}",
+        json=[
+            {
+                "client_event_id": "state-1",
+                "event_type": "TAB_SWITCH",
+                "page_url": "https://docs.google.com/forms/d/e/abc/viewform",
+            }
+        ],
+        headers={"X-Participant-Token": token},
+    )
+
+    response = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor/state")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    assert len(payload["cards"]) == 1
+    card = payload["cards"][0]
+    assert card["participant_session_id"] == ps_id
+    assert card["incident_count"] == 1
+    assert card["last_incident_type"] == "TAB_SWITCH"
+    assert card["last_incident_at"] is not None
+    assert card["latest_event_summary"].startswith("Berpindah tab")
+    assert card["last_activity_at"] is not None
+
+    assert len(payload["incidents"]) == 1
+    assert payload["incidents"][0]["participant_session_id"] == ps_id
+    assert payload["timer"]["exam_session_id"] is not None
+    assert payload["timer"]["status"] == "LIVE"
+    assert payload["timer"]["remaining_seconds"] > 0
+    assert payload["server_time"] is not None
+
+
+def test_monitor_state_is_empty_before_exam_start(admin_client: TestClient) -> None:
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+
+    payload = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor/state").json()
+    assert payload["cards"] == []
+    assert payload["incidents"] == []
+    assert payload["timer"]["remaining_seconds"] == 0
+
+
+def test_heartbeat_returns_timer_and_status(admin_client: TestClient) -> None:
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+
+    response = admin_client.post(
+        "/api/v1/participant/heartbeat",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "MONITORING"
+    assert body["remaining_seconds"] > 0
+    assert body["ends_at"] is not None
+
+
+def test_heartbeat_reports_time_expired(admin_client: TestClient, db) -> None:
+    from datetime import timedelta
+
+    from app.models import ExamSession, utcnow
+
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+
+    exam_session = db.query(ExamSession).filter(ExamSession.exam_id == exam["id"]).one()
+    exam_session.ends_at = utcnow() - timedelta(minutes=1)
+    db.commit()
+
+    response = admin_client.post(
+        "/api/v1/participant/heartbeat",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "TIME_EXPIRED"
+    assert body["remaining_seconds"] == 0

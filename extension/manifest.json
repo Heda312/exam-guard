@@ -1,16 +1,19 @@
 {
   "manifest_version": 3,
   "name": "ExamGuard — Exam Session Monitor",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Membuka halaman peserta ExamGuard dan memantau aktivitas browser selama ujian berlangsung.",
   "minimum_chrome_version": "114",
-  "permissions": ["tabs", "storage", "alarms"],
+  "permissions": ["tabs", "storage", "alarms", "scripting"],
   "host_permissions": [
     "https://exam.heda.my.id/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
     "http://localhost:5173/*",
-    "http://127.0.0.1:5173/*"
+    "http://127.0.0.1:5173/*",
+    "https://docs.google.com/*",
+    "https://forms.google.com/*",
+    "https://forms.gle/*"
   ],
   "background": {
     "service_worker": "service-worker.js",

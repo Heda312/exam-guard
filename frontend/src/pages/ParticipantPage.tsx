@@ -6,6 +6,16 @@ import { Alert, formatDuration, formatTime } from "../ui";
 
 type Phase = "form" | "waiting" | "exam" | "finished";
 
+const VIOLATION_LABELS: Record<string, string> = {
+  TAB_SWITCH: "Berpindah tab",
+  NEW_TAB: "Membuka tab baru",
+  TAB_CLOSED: "Menutup tab ujian",
+  FOCUS_LOST: "Kehilangan fokus jendela ujian",
+  WINDOW_MINIMIZED: "Meminimalkan jendela ujian",
+  NAVIGATION: "Meninggalkan halaman ujian",
+  CONNECTION_LOST: "Koneksi terputus",
+};
+
 /** Bridge to the ExamGuard Chrome extension (postMessage protocol). */
 function notifyExtension(type: string, payload: Record<string, unknown> = {}) {
   window.postMessage({ source: "examguard-web", type, payload }, window.location.origin);
@@ -31,7 +41,11 @@ export default function ParticipantPage() {
     buffered: number;
     needsAttention: boolean;
   }>({ monitoring: false, buffered: 0, needsAttention: false });
+  const [warning, setWarning] = useState<{ type: string; count: number } | null>(null);
+  const [endModal, setEndModal] = useState(false);
+  const [endReason, setEndReason] = useState<"TIME_EXPIRED" | "COMPLETED">("TIME_EXPIRED");
   const heartbeatRef = useRef<number | null>(null);
+  const refreshRef = useRef<() => void>(() => undefined);
 
   const isFinished = useMemo(
     () => ["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session?.status ?? ""),
@@ -152,7 +166,16 @@ export default function ParticipantPage() {
     async function beat() {
       if (!session) return;
       try {
-        await participantApi.heartbeat(session.participant_session_id);
+        const ack = await participantApi.heartbeat(session.participant_session_id);
+        if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(ack.status)) {
+          setEndReason(ack.status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
+          setEndModal(true);
+          notifyExtension("exam_ended", {
+            participantSessionId: session.participant_session_id,
+            status: ack.status,
+          });
+          void refreshRef.current();
+        }
       } catch {
         /* the server decides connection state; the client only retries */
       }
@@ -164,6 +187,91 @@ export default function ParticipantPage() {
       if (heartbeatRef.current) window.clearInterval(heartbeatRef.current);
     };
   }, [session, isFinished]);
+
+  /* ------------------- Participant realtime socket -------------------- */
+  useEffect(() => {
+    const participantSessionId = session?.participant_session_id;
+    if (!participantSessionId || isFinished) return;
+    const token = participantStore.token();
+    let disposed = false;
+    let pingTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const query = token ? `?token=${encodeURIComponent(token)}` : "";
+      const socket = new WebSocket(
+        `${protocol}//${window.location.host}/ws/participant/${participantSessionId}${query}`,
+      );
+
+      socket.onopen = () => {
+        if (disposed) return;
+        pingTimer = window.setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+        }, 20000);
+      };
+
+      socket.onclose = () => {
+        if (pingTimer) {
+          window.clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        if (disposed) return;
+        reconnectTimer = window.setTimeout(connect, 2500);
+      };
+
+      socket.onerror = () => undefined;
+
+      socket.onmessage = (message) => {
+        let frame: { event?: string; data?: Record<string, unknown> };
+        try {
+          frame = JSON.parse(message.data) as { event?: string; data?: Record<string, unknown> };
+        } catch {
+          return;
+        }
+        if (!frame.event) return;
+        const data = frame.data ?? {};
+
+        if (frame.event === "violation_warning") {
+          const type = typeof data.incident_type === "string" ? data.incident_type : "TAB_SWITCH";
+          const count = Number(data.event_count ?? 1);
+          setWarning({ type, count: Number.isFinite(count) ? count : 1 });
+          // The extension renders the same warning over the Google Forms tab.
+          notifyExtension("violation_warning", {
+            incidentType: type,
+            eventCount: count,
+            startedAt: typeof data.started_at === "string" ? data.started_at : null,
+          });
+          return;
+        }
+
+        if (frame.event === "time_expired" || frame.event === "exam_ended") {
+          setEndReason(frame.event === "time_expired" ? "TIME_EXPIRED" : "COMPLETED");
+          setEndModal(true);
+          notifyExtension("exam_ended", { participantSessionId });
+          void refreshRef.current();
+          return;
+        }
+
+        if (frame.event === "connected") {
+          const status = typeof data.status === "string" ? data.status : "";
+          const seconds = Number(data.remaining_seconds ?? 0);
+          if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(status) || seconds === 0) {
+            setEndReason(status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
+            setEndModal(true);
+            void refreshRef.current();
+          }
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (pingTimer) window.clearInterval(pingTimer);
+    };
+  }, [session?.participant_session_id, isFinished]);
 
   /* ------------------------ Registration flow ------------------------ */
   async function handleRegister(event: React.FormEvent) {
@@ -222,10 +330,19 @@ export default function ParticipantPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, session?.participant_session_id]);
 
+  // Keep the latest session refresher reachable from socket callbacks.
   useEffect(() => {
-    if (remaining === 0 && session && !isFinished) {
+    refreshRef.current = () => {
       void refreshSession();
-    }
+    };
+  });
+
+  useEffect(() => {
+    if (remaining !== 0 || !session || isFinished) return;
+    setEndReason("TIME_EXPIRED");
+    setEndModal(true);
+    notifyExtension("exam_ended", { participantSessionId: session.participant_session_id });
+    void refreshSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining]);
 
@@ -541,6 +658,84 @@ export default function ParticipantPage() {
           ) : null}
         </div>
       </div>
+
+      {warning ? (
+        <div
+          className="modal-backdrop"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="violation_title"
+        >
+          <div className="modal-panel is-compact">
+            <div className="modal-icon is-warning" aria-hidden="true">
+              !
+            </div>
+            <h2 id="violation_title" className="modal-title">
+              Peringatan pelanggaran
+            </h2>
+            <p className="small muted">
+              Sistem mendeteksi{" "}
+              <strong>{VIOLATION_LABELS[warning.type] ?? warning.type}</strong> pada sesi Anda.
+              Aktivitas ini tercatat dan dilaporkan kepada pengawas.
+            </p>
+            <div className="alert alert-warning">
+              <div className="small">
+                Kembali ke halaman ujian dan jangan berpindah tab, membuka jendela lain, atau
+                meninggalkan formulir sampai ujian selesai. Pelanggaran berulang dapat memengaruhi
+                penilaian integritas.
+              </div>
+            </div>
+            {warning.count > 1 ? (
+              <p className="small muted">
+                Episode ini mencakup {warning.count} aktivitas yang terdeteksi.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="btn btn-primary btn-block"
+              onClick={() => setWarning(null)}
+            >
+              Saya mengerti
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {endModal && session ? (
+        <div
+          className="modal-backdrop"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="exam_end_title"
+        >
+          <div className="modal-panel is-compact">
+            <div className="modal-icon is-danger" aria-hidden="true">
+              ■
+            </div>
+            <h2 id="exam_end_title" className="modal-title">
+              {endReason === "TIME_EXPIRED" ? "Waktu ujian telah habis" : "Ujian telah berakhir"}
+            </h2>
+            <p className="small muted">
+              {endReason === "TIME_EXPIRED"
+                ? "Waktu pengerjaan telah habis. Sistem berhenti memantau aktivitas browser Anda."
+                : "Ujian telah diakhiri oleh pengawas. Sistem berhenti memantau aktivitas browser Anda."}
+            </p>
+            <div className="alert alert-info">
+              <div className="small">
+                Pastikan jawaban pada formulir ujian sudah terkirim sebelum menutup tab ini.
+                ExamGuard tidak dapat mengirimkan formulir atas nama Anda.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-block"
+              onClick={() => setEndModal(false)}
+            >
+              Mengerti
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

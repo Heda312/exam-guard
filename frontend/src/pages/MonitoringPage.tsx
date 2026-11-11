@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api";
 import { useAuth } from "../auth";
-import type { Exam, Incident, ParticipantCard, ParticipantDetail } from "../types";
+import type { Exam, ExamTimer, Incident, ParticipantCard, ParticipantDetail } from "../types";
 import {
   Alert,
   ConnectionBadge,
@@ -11,6 +11,7 @@ import {
   LoadingBlock,
   formatDateTime,
   formatDuration,
+  formatRelative,
   formatTime,
   participantStatusLabel,
 } from "../ui";
@@ -32,6 +33,30 @@ const REVIEW_LABELS: Record<string, string> = {
   FLAGGED_FOR_FOLLOWUP: "Perlu tindak lanjut",
 };
 
+type Filter = "all" | "online" | "attention" | "offline";
+
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: "all", label: "Semua" },
+  { key: "online", label: "Online" },
+  { key: "attention", label: "Bermasalah" },
+  { key: "offline", label: "Offline" },
+];
+
+function summarize(eventType: string | null, pageHost: string | null): string | null {
+  if (!eventType) return null;
+  const label = EVENT_LABELS[eventType] ?? eventType;
+  return pageHost ? `${label} · ${pageHost}` : label;
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 export default function MonitoringPage() {
   const { examId } = useParams();
   const { canManageExam } = useAuth();
@@ -39,107 +64,342 @@ export default function MonitoringPage() {
   const [selected, setSelected] = useState<string>(examId ?? "");
   const [cards, setCards] = useState<ParticipantCard[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [remaining, setRemaining] = useState<number | null>(null);
+  const [timer, setTimer] = useState<ExamTimer | null>(null);
+  const [deadline, setDeadline] = useState<number | null>(null);
   const [detail, setDetail] = useState<ParticipantDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [live, setLive] = useState(false);
-  const socketRef = useRef<WebSocket | null>(null);
+  const [lastSync, setLastSync] = useState<number>(() => Date.now());
+  const [now, setNow] = useState<number>(() => Date.now());
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [flashes, setFlashes] = useState<Record<string, number>>({});
 
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<number | null>(null);
+  const refreshRef = useRef<number | null>(null);
+  const flashTimers = useRef<Record<string, number>>({});
+  const detailIdRef = useRef<string | null>(null);
+  const seenIncidents = useRef<Set<string>>(new Set());
+
+  /* ----------------------------- Data loading ----------------------------- */
   useEffect(() => {
     api
       .listExams()
       .then((list) => {
         setExams(list);
-        if (!selected && list.length > 0) setSelected(list[0].id);
+        setSelected((previous) => previous || list[0]?.id || "");
       })
       .catch((err) => setError(errorMessage(err)));
-  }, [selected]);
+  }, []);
 
   const currentExam = useMemo(
     () => exams.find((exam) => exam.id === selected) ?? null,
     [exams, selected],
   );
 
-  const loadMonitoring = useCallback(async () => {
-    if (!selected) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const [participantCards, incidentList, timer] = await Promise.all([
-        api.monitor(selected),
-        api.listIncidents(selected).catch(() => [] as Incident[]),
-        api.examTimer(selected).catch(() => null),
-      ]);
-      setCards(participantCards);
-      setIncidents(incidentList);
-      setRemaining(timer?.remaining_seconds ?? null);
-      setError(null);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [selected]);
+  const applyTimer = useCallback((next: ExamTimer) => {
+    setTimer(next);
+    setDeadline(Date.now() + Math.max(0, next.remaining_seconds) * 1000);
+    setLastSync(Date.now());
+  }, []);
+
+  const loadState = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (!selected) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const state = await api.monitorState(selected);
+        setCards(state.cards);
+        setIncidents(state.incidents);
+        applyTimer(state.timer);
+        setError(null);
+        const openDetailId = detailIdRef.current;
+        if (openDetailId) {
+          api
+            .participantDetail(openDetailId)
+            .then(setDetail)
+            .catch(() => undefined);
+        }
+      } catch (err) {
+        if (!options.silent) setError(errorMessage(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [selected, applyTimer],
+  );
 
   useEffect(() => {
     setLoading(true);
-    void loadMonitoring();
+    setCards([]);
+    setIncidents([]);
+    setTimer(null);
+    setDeadline(null);
+    setQuery("");
+    setFilter("all");
+    setDetail(null);
+    setFlashes({});
+    detailIdRef.current = null;
+    seenIncidents.current = new Set();
+    if (refreshRef.current) {
+      window.clearTimeout(refreshRef.current);
+      refreshRef.current = null;
+    }
+    void loadState();
+  }, [selected, loadState]);
+
+  // Safety net: poll only while the WebSocket is not connected.
+  useEffect(() => {
+    if (!selected) return;
     const interval = window.setInterval(() => {
-      void loadMonitoring();
-    }, 5000);
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) void loadState({ silent: true });
+    }, 10000);
     return () => window.clearInterval(interval);
-  }, [loadMonitoring]);
+  }, [selected, loadState]);
 
-  // Server-authoritative countdown: recomputed from the server value every poll.
+  // One ambient clock drives both the countdown and the relative timestamps.
   useEffect(() => {
-    if (remaining === null) return;
-    const timer = window.setInterval(() => {
-      setRemaining((value) => (value === null ? null : Math.max(0, value - 1)));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [remaining !== null]);
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, []);
 
-  // Live updates over WebSocket (proctor socket, scoped to the exam session).
-  useEffect(() => {
-    const examSessionId = currentExam?.exam_session_id;
-    if (!selected || !examSessionId) return;
+  const remaining = deadline === null ? null : Math.max(0, Math.round((deadline - now) / 1000));
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/exam/${examSessionId}`);
-    socketRef.current = socket;
-    socket.onopen = () => setLive(true);
-    socket.onclose = () => setLive(false);
-    socket.onerror = () => setLive(false);
-    socket.onmessage = (message) => {
-      try {
-        const payload = JSON.parse(message.data) as { event: string };
-        if (
-          [
-            "monitoring_event",
-            "incident_created",
-            "participant_connection_lost",
-            "participant_ready",
-            "participant_monitoring_started",
-            "exam_ended",
-            "incident_reviewed",
-          ].includes(payload.event)
-        ) {
-          void loadMonitoring();
-        }
-      } catch {
-        /* ignore malformed frames */
+  /* ------------------------------ Live updates ----------------------------- */
+  const patchCard = useCallback(
+    (participantSessionId: string, patch: (card: ParticipantCard) => ParticipantCard) => {
+      setCards((previous) =>
+        previous.map((card) =>
+          card.participant_session_id === participantSessionId ? patch(card) : card,
+        ),
+      );
+    },
+    [],
+  );
+
+  const flashCard = useCallback((participantSessionId: string) => {
+    setFlashes((previous) => ({ ...previous, [participantSessionId]: Date.now() }));
+    const existing = flashTimers.current[participantSessionId];
+    if (existing) window.clearTimeout(existing);
+    flashTimers.current[participantSessionId] = window.setTimeout(() => {
+      setFlashes((previous) => {
+        const next = { ...previous };
+        delete next[participantSessionId];
+        return next;
+      });
+      delete flashTimers.current[participantSessionId];
+    }, 2200);
+  }, []);
+
+  const scheduleRefresh = useCallback(
+    (delay = 250) => {
+      if (refreshRef.current) window.clearTimeout(refreshRef.current);
+      refreshRef.current = window.setTimeout(() => {
+        refreshRef.current = null;
+        void loadState({ silent: true });
+      }, delay);
+    },
+    [loadState],
+  );
+
+  const examSessionId = timer?.exam_session_id ?? currentExam?.exam_session_id ?? null;
+
+  const handleFrame = useCallback(
+    (event: string, data: Record<string, unknown>) => {
+      if (event === "connected") {
+        const seconds = Number(data.remaining_seconds ?? 0);
+        const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+        // Keep the timer loaded from the API (started_at drives the progress
+        // bar); the socket frame only refreshes the countdown.
+        setDeadline(Date.now() + safeSeconds * 1000);
+        setLastSync(Date.now());
+        setTimer((previous) => ({
+          exam_id: selected,
+          exam_session_id: examSessionId ?? previous?.exam_session_id,
+          status: (typeof data.status === "string"
+            ? data.status
+            : previous?.status ?? "LIVE") as ExamTimer["status"],
+          session_status:
+            typeof data.status === "string" ? data.status : previous?.session_status,
+          server_time: new Date().toISOString(),
+          started_at:
+            previous?.started_at ??
+            (typeof data.started_at === "string" ? data.started_at : null),
+          ends_at:
+            typeof data.ends_at === "string" ? data.ends_at : previous?.ends_at ?? null,
+          remaining_seconds: safeSeconds,
+        }));
+        return;
       }
-    };
-    return () => {
-      socket.close();
-      socketRef.current = null;
-    };
-  }, [selected, currentExam?.exam_session_id, loadMonitoring]);
+      if (event === "pong") return;
 
+      if (event === "monitoring_event") {
+        const id = typeof data.participant_session_id === "string" ? data.participant_session_id : null;
+        if (!id) {
+          scheduleRefresh();
+          return;
+        }
+        const batch = Array.isArray(data.events)
+          ? (data.events as Array<Record<string, unknown>>)
+          : [];
+        const latest = batch.length > 0 ? batch[batch.length - 1] : data;
+        const eventType = typeof latest.event_type === "string" ? latest.event_type : null;
+        const receivedAt =
+          typeof latest.received_at === "string" ? latest.received_at : new Date().toISOString();
+        const pageHost = typeof latest.page_host === "string" ? latest.page_host : null;
+        patchCard(id, (card) => ({
+          ...card,
+          online: true,
+          connection_state: "ONLINE",
+          last_activity_at: receivedAt,
+          latest_event_summary: summarize(eventType, pageHost) ?? card.latest_event_summary,
+        }));
+        flashCard(id);
+        scheduleRefresh(300);
+        return;
+      }
+
+      if (event === "incident_created") {
+        const id = typeof data.participant_session_id === "string" ? data.participant_session_id : null;
+        const incidentId = typeof data.incident_id === "string" ? data.incident_id : null;
+        if (id && incidentId && !seenIncidents.current.has(incidentId)) {
+          seenIncidents.current.add(incidentId);
+          const incidentType =
+            typeof data.incident_type === "string" ? data.incident_type : null;
+          const startedAt =
+            typeof data.started_at === "string" ? data.started_at : new Date().toISOString();
+          patchCard(id, (card) => ({
+            ...card,
+            incident_count: card.incident_count + 1,
+            last_incident_type: incidentType,
+            last_incident_at: startedAt,
+          }));
+        }
+        if (id) flashCard(id);
+        scheduleRefresh(300);
+        return;
+      }
+
+      if (event === "incident_reviewed") {
+        const incidentId = typeof data.incident_id === "string" ? data.incident_id : null;
+        const reviewStatus = typeof data.review_status === "string" ? data.review_status : null;
+        if (incidentId && reviewStatus) {
+          setIncidents((previous) =>
+            previous.map((incident) =>
+              incident.id === incidentId ? { ...incident, review_status: reviewStatus } : incident,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (event === "participant_connection_lost") {
+        const id = typeof data.participant_session_id === "string" ? data.participant_session_id : null;
+        if (id) {
+          patchCard(id, (card) => ({
+            ...card,
+            online: false,
+            connection_state: "OFFLINE",
+            status: "CONNECTION_LOST",
+          }));
+          flashCard(id);
+        }
+        scheduleRefresh(200);
+        return;
+      }
+
+      if (event === "exam_ended") {
+        setDeadline(Date.now());
+        scheduleRefresh(200);
+        return;
+      }
+
+      if (
+        event === "participant_ready" ||
+        event === "participant_monitoring_started" ||
+        event === "participant_reconnected"
+      ) {
+        scheduleRefresh(150);
+      }
+    },
+    [applyTimer, examSessionId, patchCard, flashCard, scheduleRefresh, selected],
+  );
+
+  useEffect(() => {
+    if (!examSessionId) return;
+    let disposed = false;
+    let pingTimer: number | null = null;
+
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${protocol}//${window.location.host}/ws/exam/${examSessionId}`);
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        if (disposed) return;
+        setLive(true);
+        pingTimer = window.setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+        }, 20000);
+      };
+
+      socket.onclose = () => {
+        if (pingTimer) {
+          window.clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        if (socketRef.current === socket) socketRef.current = null;
+        if (disposed) return;
+        setLive(false);
+        reconnectRef.current = window.setTimeout(connect, 2000);
+      };
+
+      socket.onerror = () => setLive(false);
+
+      socket.onmessage = (message) => {
+        try {
+          const frame = JSON.parse(message.data) as {
+            event?: string;
+            data?: Record<string, unknown>;
+          };
+          if (frame.event) handleFrame(frame.event, frame.data ?? {});
+        } catch {
+          /* ignore malformed frames */
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectRef.current) {
+        window.clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
+      if (pingTimer) window.clearInterval(pingTimer);
+      socketRef.current?.close();
+      socketRef.current = null;
+      setLive(false);
+    };
+  }, [examSessionId, handleFrame]);
+
+  useEffect(
+    () => () => {
+      if (refreshRef.current) window.clearTimeout(refreshRef.current);
+      Object.values(flashTimers.current).forEach((id) => window.clearTimeout(id));
+    },
+    [],
+  );
+
+  /* ------------------------------- Actions -------------------------------- */
   async function openDetail(card: ParticipantCard) {
+    detailIdRef.current = card.participant_session_id;
     try {
       setDetail(await api.participantDetail(card.participant_session_id));
     } catch (err) {
@@ -147,20 +407,53 @@ export default function MonitoringPage() {
     }
   }
 
+  function closeDetail() {
+    detailIdRef.current = null;
+    setDetail(null);
+  }
+
   async function review(incident: Incident, status: string) {
     try {
-      await api.reviewIncident(incident.id, { review_status: status, notes: incident.notes ?? undefined });
+      const updated = await api.reviewIncident(incident.id, {
+        review_status: status,
+        notes: incident.notes ?? undefined,
+      });
+      setIncidents((previous) =>
+        previous.map((item) => (item.id === updated.id ? updated : item)),
+      );
       setNotice("Status tinjauan insiden diperbarui.");
-      await loadMonitoring();
+      scheduleRefresh(0);
     } catch (err) {
       setError(errorMessage(err));
     }
   }
 
-  if (loading && exams.length === 0) return <LoadingBlock rows={4} />;
-
+  /* -------------------------------- Derived ------------------------------- */
   const online = cards.filter((card) => card.online).length;
+  const flagged = cards.filter((card) => card.incident_count > 0).length;
   const unreviewed = incidents.filter((incident) => incident.review_status === "UNREVIEWED").length;
+
+  const visibleCards = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return cards.filter((card) => {
+      if (filter === "online" && !card.online) return false;
+      if (filter === "offline" && card.online) return false;
+      if (filter === "attention" && card.incident_count === 0) return false;
+      if (!needle) return true;
+      return [card.full_name, card.npm ?? "", card.group_name ?? ""].some((value) =>
+        value.toLowerCase().includes(needle),
+      );
+    });
+  }, [cards, filter, query]);
+
+  const progress = useMemo(() => {
+    if (!timer?.started_at || !timer.ends_at || remaining === null) return null;
+    const total = (new Date(timer.ends_at).getTime() - new Date(timer.started_at).getTime()) / 1000;
+    if (total <= 0) return null;
+    return Math.max(0, Math.min(100, (remaining / total) * 100));
+  }, [timer?.started_at, timer?.ends_at, remaining]);
+
+  if (loading && exams.length === 0) return <LoadingBlock rows={4} />;
 
   return (
     <div>
@@ -180,9 +473,12 @@ export default function MonitoringPage() {
               <span>{formatDuration(remaining)}</span>
             </div>
           ) : null}
-          <span className={`badge ${live ? "badge-online" : "badge-neutral"}`} title="Status koneksi realtime">
-            <span className="badge-dot" aria-hidden="true" />
-            {live ? "Realtime aktif" : "Polling 5 dtk"}
+          <span
+            className={`badge ${live ? "badge-online" : "badge-warning"}`}
+            title="Status koneksi realtime"
+          >
+            <span className={`badge-dot ${live ? "is-pulsing" : ""}`} aria-hidden="true" />
+            {live ? "Realtime aktif" : "Menghubungkan ulang…"}
           </span>
         </div>
       </header>
@@ -190,8 +486,8 @@ export default function MonitoringPage() {
       {error ? <Alert tone="error">{error}</Alert> : null}
       {notice ? <Alert tone="success">{notice}</Alert> : null}
 
-      <div className="card" style={{ marginBottom: 22 }}>
-        <div className="row-between">
+      <div className="card monitor-toolbar">
+        <div className="row-between monitor-toolbar-row">
           <div className="field" style={{ marginBottom: 0, minWidth: 260 }}>
             <label htmlFor="exam_select">Ujian</label>
             <select
@@ -208,10 +504,10 @@ export default function MonitoringPage() {
             </select>
           </div>
           {currentExam ? (
-            <div className="row">
+            <div className="row monitor-toolbar-actions">
               <ExamStatusBadge status={currentExam.status} />
-              <span className="small muted">
-                {online} online · {cards.length - online} offline · {unreviewed} insiden belum ditinjau
+              <span className="small muted" title={formatTime(new Date(lastSync).toISOString())}>
+                Diperbarui {formatRelative(new Date(lastSync).toISOString(), now)}
               </span>
               <Link to={`/exams/${currentExam.id}`} className="btn btn-ghost btn-sm">
                 Detail ujian
@@ -219,6 +515,66 @@ export default function MonitoringPage() {
             </div>
           ) : null}
         </div>
+
+        {selected ? (
+          <div className="monitor-summary">
+            <div className="summary-chip">
+              <span className="summary-label">Peserta</span>
+              <strong className="mono">{cards.length}</strong>
+            </div>
+            <div className="summary-chip is-online">
+              <span className="summary-label">Online</span>
+              <strong className="mono">{online}</strong>
+            </div>
+            <div className="summary-chip is-offline">
+              <span className="summary-label">Offline</span>
+              <strong className="mono">{cards.length - online}</strong>
+            </div>
+            <div className="summary-chip is-warning">
+              <span className="summary-label">Pernah insiden</span>
+              <strong className="mono">{flagged}</strong>
+            </div>
+            <div className="summary-chip is-danger">
+              <span className="summary-label">Belum ditinjau</span>
+              <strong className="mono">{unreviewed}</strong>
+            </div>
+          </div>
+        ) : null}
+
+        {selected && cards.length > 0 ? (
+          <div className="row-between monitor-filter-row">
+            <div className="filter-group" role="group" aria-label="Filter kartu peserta">
+              {FILTERS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`btn btn-sm ${filter === item.key ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setFilter(item.key)}
+                  aria-pressed={filter === item.key}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <input
+              type="search"
+              className="monitor-search"
+              placeholder="Cari nama, NPM, atau kelompok…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label="Cari peserta"
+            />
+          </div>
+        ) : null}
+
+        {progress !== null ? (
+          <div className="monitor-progress" aria-hidden="true">
+            <div
+              className={`monitor-progress-fill ${remaining !== null && remaining < 300 ? "is-critical" : ""}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        ) : null}
       </div>
 
       {!selected ? (
@@ -228,18 +584,26 @@ export default function MonitoringPage() {
           title="Belum ada peserta aktif"
           description="Peserta akan muncul setelah mendaftar dengan Exam ID dan nama yang sesuai roster."
         />
+      ) : visibleCards.length === 0 ? (
+        <EmptyState
+          title="Tidak ada peserta yang cocok"
+          description="Ubah kata kunci pencarian atau filter yang dipilih."
+        />
       ) : (
-        <section aria-label="Kartu peserta">
+        <section aria-label="Kartu peserta" aria-live="polite">
           <div className="participant-grid">
-            {cards.map((card) => (
+            {visibleCards.map((card) => (
               <article
                 key={card.participant_session_id}
                 className={`participant-card ${card.incident_count > 0 ? "is-alert" : ""} ${
                   !card.online ? "is-offline" : ""
-                }`}
+                } ${flashes[card.participant_session_id] ? "is-flash" : ""}`}
               >
                 <div className="participant-head">
-                  <div>
+                  <div className="participant-avatar" aria-hidden="true">
+                    {initials(card.full_name)}
+                  </div>
+                  <div className="participant-identity">
                     <div className="participant-name">{card.full_name}</div>
                     <div className="participant-meta">
                       {card.npm ? `NPM ${card.npm}` : "NPM tidak diisi"}
@@ -249,26 +613,53 @@ export default function MonitoringPage() {
                   <ConnectionBadge online={card.online} status={card.status} />
                 </div>
 
-                <div className="stack gap-8">
-                  <div className="small muted">
-                    Status sesi: <strong>{participantStatusLabel(card.status)}</strong>
+                <div className="participant-metrics">
+                  <div className="participant-metric">
+                    <span className="metric-label">Status sesi</span>
+                    <span className="metric-value">{participantStatusLabel(card.status)}</span>
                   </div>
-                  <div className="small muted">
-                    Aktivitas terakhir: {card.latest_event_summary ?? "Belum ada aktivitas"}
+                  <div className="participant-metric">
+                    <span className="metric-label">Heartbeat</span>
+                    <span className={`metric-value ${card.online ? "" : "is-warning"}`}>
+                      {formatRelative(card.last_heartbeat_at, now)}
+                    </span>
                   </div>
-                  <div className="small muted">Heartbeat: {formatTime(card.last_heartbeat_at)}</div>
+                  <div className="participant-metric is-wide">
+                    <span className="metric-label">Aktivitas terakhir</span>
+                    <span className="metric-value">
+                      {card.latest_event_summary ?? "Belum ada aktivitas"}
+                      {card.last_activity_at ? (
+                        <span className="metric-time"> · {formatRelative(card.last_activity_at, now)}</span>
+                      ) : null}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="participant-foot">
-                  {card.incident_count > 0 ? (
-                    <span className="incident-pill">
-                      <span aria-hidden="true">▲</span>
-                      {card.incident_count} insiden
+                  <div className="stack gap-4">
+                    {card.incident_count > 0 ? (
+                      <span className="incident-pill">
+                        <span aria-hidden="true">▲</span>
+                        {card.incident_count} insiden
+                      </span>
+                    ) : (
+                      <span className="small muted">Tidak ada insiden</span>
+                    )}
+                    <span className="small muted">
+                      {card.last_incident_at
+                        ? `Terakhir: ${
+                            EVENT_LABELS[card.last_incident_type ?? ""] ??
+                            card.last_incident_type ??
+                            "insiden"
+                          } · ${formatRelative(card.last_incident_at, now)}`
+                        : `Terhubung ${formatRelative(card.connected_at, now)}`}
                     </span>
-                  ) : (
-                    <span className="small muted">Tidak ada insiden</span>
-                  )}
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => openDetail(card)}>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => openDetail(card)}
+                  >
                     Lihat detail
                   </button>
                 </div>
@@ -315,7 +706,10 @@ export default function MonitoringPage() {
                     <tr key={incident.id}>
                       <td>
                         <div className="mono small">{formatDateTime(incident.started_at)}</div>
-                        <div className="small muted">{participant?.full_name ?? "Peserta"}</div>
+                        <div className="small muted">
+                          {participant?.full_name ?? "Peserta"} ·{" "}
+                          {formatRelative(incident.started_at, now)}
+                        </div>
                       </td>
                       <td>{EVENT_LABELS[incident.incident_type] ?? incident.incident_type}</td>
                       <td className="mono">{incident.event_count}</td>
@@ -362,25 +756,13 @@ export default function MonitoringPage() {
 
       {detail ? (
         <div
+          className="modal-backdrop"
           role="dialog"
           aria-modal="true"
           aria-label={`Detail peserta ${detail.full_name}`}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(24,57,44,0.42)",
-            display: "grid",
-            placeItems: "center",
-            padding: 20,
-            zIndex: 40,
-          }}
-          onClick={() => setDetail(null)}
+          onClick={closeDetail}
         >
-          <div
-            className="card"
-            style={{ maxWidth: 720, width: "100%", maxHeight: "86vh", overflowY: "auto" }}
-            onClick={(event) => event.stopPropagation()}
-          >
+          <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
             <div className="row-between">
               <div>
                 <h2>{detail.full_name}</h2>
@@ -389,7 +771,7 @@ export default function MonitoringPage() {
                   {participantStatusLabel(detail.status)}
                 </p>
               </div>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDetail(null)}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={closeDetail}>
                 Tutup
               </button>
             </div>

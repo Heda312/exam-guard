@@ -39,6 +39,31 @@ const MAX_BUFFER = 500;
 const SESSION_KEY = "session";
 const BUFFER_KEY = "eventBuffer";
 
+/** Events that are uploaded immediately instead of waiting for a full batch.
+ *  A quick tab switch used to sit in the buffer for up to 30 s, which made the
+ *  proctor dashboard look like nothing happened. */
+const PRIORITY_EVENTS = new Set([
+  "TAB_SWITCH",
+  "NEW_TAB",
+  "TAB_CLOSED",
+  "FOCUS_LOST",
+  "FOCUS_RESTORED",
+  "WINDOW_MINIMIZED",
+]);
+
+/** Local events that should raise a warning as soon as the participant is back
+ *  on the exam tab. */
+const VIOLATION_EVENTS = new Set([
+  "TAB_SWITCH",
+  "NEW_TAB",
+  "TAB_CLOSED",
+  "FOCUS_LOST",
+  "WINDOW_MINIMIZED",
+  "NAVIGATION",
+]);
+
+const WARNING_AUTO_DISMISS_MS = 15000;
+
 /* ------------------------------------------------------------------ */
 /* Storage helpers                                                     */
 /* ------------------------------------------------------------------ */
@@ -270,6 +295,7 @@ function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
 /* ------------------------------------------------------------------ */
 
 async function apiPost(path, session, body) {
+  await resolveApiBase(session);
   try {
     const response = await fetch(`${apiBase}${path}`, {
       method: "POST",
@@ -293,6 +319,7 @@ async function apiPost(path, session, body) {
 }
 
 async function fetchSessionState(session) {
+  await resolveApiBase(session);
   try {
     const response = await fetch(`${apiBase}/participant/session/${session.participantSessionId}`, {
       headers: { "X-Participant-Token": session.token ?? "" },
@@ -321,7 +348,7 @@ function hostOf(url) {
   }
 }
 
-async function enqueueEvent(type, details = {}) {
+async function enqueueEvent(type, details = {}, options = {}) {
   const session = await readSession();
   if (!session?.monitoring) return;
 
@@ -339,14 +366,44 @@ async function enqueueEvent(type, details = {}) {
   const buffer = await getBuffer();
   buffer.push(event);
   await setBuffer(buffer);
+
+  if (VIOLATION_EVENTS.has(type) && !details.skipWarning) {
+    const previous = session.pendingWarning;
+    await patchSession({
+      pendingWarning: {
+        incidentType: type,
+        eventCount: (previous?.eventCount ?? 0) + 1,
+        startedAt: previous?.startedAt ?? event.client_timestamp,
+      },
+    });
+  }
   await updateBadge();
 
-  if (buffer.length >= 10) void flushEvents();
+  if (options.priority || PRIORITY_EVENTS.has(type)) {
+    // Do not await: capture callbacks must stay responsive, but the flush starts
+    // right away instead of waiting for the 30 s alarm.
+    void flushEvents();
+  } else if (buffer.length >= 10) {
+    void flushEvents();
+  }
 }
 
-async function flushEvents() {
+/** Serialise read-modify-write cycles on the buffer so bursts (switch + new tab)
+ *  cannot overwrite each other. */
+let enqueueChain = Promise.resolve();
+
+function queueEvent(type, details = {}, options = {}) {
+  const task = enqueueChain.then(() => enqueueEvent(type, details, options));
+  enqueueChain = task.catch(() => undefined);
+  return task;
+}
+
+async function flushOnce() {
   const session = await readSession();
   if (!session?.monitoring || !session.token) return;
+  // The service worker is restarted constantly; the API base lives in the
+  // persisted session, not in module state.
+  await resolveApiBase(session);
 
   let buffer = await getBuffer();
   while (buffer.length > 0) {
@@ -380,11 +437,22 @@ async function flushEvents() {
   }
 }
 
+/** Calls are chained, so a flush started by a priority event cannot interleave
+ *  with the alarm flush and upload the same batch twice. */
+let flushChain = Promise.resolve();
+
+function flushEvents() {
+  const run = flushChain.then(flushOnce, flushOnce);
+  flushChain = run.catch(() => undefined);
+  return run;
+}
+
 async function heartbeat() {
   const session = await readSession();
   if (!session?.token) return;
+  await resolveApiBase(session);
   try {
-    await fetch(`${apiBase}/participant/heartbeat`, {
+    const response = await fetch(`${apiBase}/participant/heartbeat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -392,6 +460,16 @@ async function heartbeat() {
       },
       body: JSON.stringify({ participant_session_id: session.participantSessionId }),
     });
+    if (!response.ok) return;
+    const data = await response.json().catch(() => null);
+    if (!data) return;
+    if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(data.status)) {
+      await handleExamEnded(data.status);
+      return;
+    }
+    if (typeof data.remaining_seconds === "number") {
+      await patchSession({ remainingSeconds: data.remaining_seconds });
+    }
   } catch {
     // Offline: the server marks the session CONNECTION_LOST on timeout.
   }
@@ -400,25 +478,197 @@ async function heartbeat() {
 async function startCapture() {
   await chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 0.5 });
   await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
-  await enqueueEvent("FOCUS_RESTORED", { metadata: { reason: "monitoring_started" } });
+  await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
+  await queueEvent("FOCUS_RESTORED", { metadata: { reason: "monitoring_started" } }, { priority: true });
 }
 
 async function stopMonitoring(reason = "manual") {
   const session = await readSession();
   if (!session) return null;
-  await enqueueEvent("CONNECTION_LOST", { metadata: { reason } });
+  await queueEvent("CONNECTION_LOST", { metadata: { reason } }, { priority: true });
   await flushEvents();
   await chrome.alarms.clear(FLUSH_ALARM);
   await chrome.alarms.clear(HEARTBEAT_ALARM);
+  await chrome.alarms.clear(WATCH_ALARM);
   const next = await patchSession({ monitoring: false, stoppedAt: Date.now() });
   await updateBadge();
   return next;
+}
+
+/** The exam clock is authoritative on the server: heartbeat tells us when it
+ *  ends, so the extension can stop capture and raise the end overlay. */
+async function handleExamEnded(status = "COMPLETED") {
+  const session = await readSession();
+  if (!session) return;
+  if (session.ended && !session.monitoring) {
+    await showOverlayOnExamTab(status === "TIME_EXPIRED" ? "time_up" : "ended");
+    return;
+  }
+  await flushEvents();
+  await chrome.alarms.clear(FLUSH_ALARM);
+  await chrome.alarms.clear(HEARTBEAT_ALARM);
+  await chrome.alarms.clear(WATCH_ALARM);
+  await patchSession({
+    monitoring: false,
+    ended: true,
+    endedStatus: status,
+    pendingWarning: null,
+    stoppedAt: Date.now(),
+  });
+  await updateBadge();
+  await showOverlayOnExamTab(status === "TIME_EXPIRED" ? "time_up" : "ended");
+}
+
+/* ------------------------------------------------------------------ */
+/* In-tab overlay (warning / exam ended)                               */
+/* ------------------------------------------------------------------ */
+
+const OVERLAY_LABELS = {
+  TAB_SWITCH: "Berpindah tab",
+  NEW_TAB: "Membuka tab baru",
+  TAB_CLOSED: "Menutup tab",
+  FOCUS_LOST: "Kehilangan fokus jendela ujian",
+  WINDOW_MINIMIZED: "Meminimalkan jendela ujian",
+  NAVIGATION: "Meninggalkan halaman ujian",
+};
+
+function overlayContent(kind, warning) {
+  if (kind === "warning") {
+    const label = OVERLAY_LABELS[warning?.incidentType] ?? "Aktivitas tidak diizinkan";
+    return {
+      tone: "#c58a35",
+      title: "Peringatan pelanggaran",
+      message: `${label} terdeteksi. Aktivitas ini tercatat dan dilaporkan kepada pengawas.`,
+      note: "Kembali ke formulir ujian dan jangan berpindah tab atau jendela sampai ujian selesai.",
+      button: "Saya mengerti",
+      autoDismissMs: WARNING_AUTO_DISMISS_MS,
+    };
+  }
+  if (kind === "time_up") {
+    return {
+      tone: "#b54745",
+      title: "Waktu ujian telah habis",
+      message: "Waktu pengerjaan telah habis. Pemantauan aktivitas browser dihentikan.",
+      note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
+      button: "Mengerti",
+      autoDismissMs: 0,
+    };
+  }
+  return {
+    tone: "#b54745",
+    title: "Ujian telah berakhir",
+    message: "Ujian telah diakhiri oleh pengawas. Pemantauan aktivitas browser dihentikan.",
+    note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
+    button: "Mengerti",
+    autoDismissMs: 0,
+  };
+}
+
+/** Runs inside the exam tab (isolated world) and renders a shadow-DOM overlay
+ *  that cannot be restyled by the exam page. Must stay self-contained: Chrome
+ *  serialises this function, it cannot reference module scope. */
+function renderOverlay(payload) {
+  const HOST_ID = "examguard-overlay-host";
+  const existing = document.getElementById(HOST_ID);
+  if (existing) existing.remove();
+
+  const host = document.createElement("div");
+  host.id = HOST_ID;
+  host.style.cssText =
+    "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;" +
+    "justify-content:center;padding:24px;pointer-events:none;";
+  const shadow = host.attachShadow({ mode: "open" });
+
+  const panel = document.createElement("div");
+  panel.setAttribute("role", "alertdialog");
+  panel.style.cssText = [
+    "pointer-events:auto",
+    "max-width:460px",
+    "width:100%",
+    "box-sizing:border-box",
+    "font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif",
+    "background:#fffcf6",
+    "color:#18392c",
+    "border-radius:18px",
+    "padding:26px",
+    "box-shadow:0 20px 48px rgba(24,57,44,0.3)",
+    `border-top:6px solid ${payload.tone}`,
+  ].join(";");
+
+  const title = document.createElement("h2");
+  title.textContent = payload.title;
+  title.style.cssText = "font-size:20px;line-height:1.3;margin:0 0 8px;";
+
+  const message = document.createElement("p");
+  message.textContent = payload.message;
+  message.style.cssText = "font-size:14px;line-height:1.55;margin:0 0 10px;color:#2f4038;";
+
+  const note = document.createElement("p");
+  note.textContent = payload.note;
+  note.style.cssText = "font-size:12.5px;line-height:1.55;margin:0 0 18px;color:#5f665f;";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = payload.button;
+  button.style.cssText =
+    "width:100%;padding:11px 16px;border:0;border-radius:12px;background:#18392c;" +
+    "color:#fffcf6;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;";
+  button.addEventListener("click", () => host.remove());
+
+  panel.append(title, message, note, button);
+  shadow.append(panel);
+  document.documentElement.appendChild(host);
+
+  if (payload.autoDismissMs > 0) {
+    setTimeout(() => host.remove(), payload.autoDismissMs);
+  }
+}
+
+async function showOverlay(tabId, kind, warning) {
+  if (!tabId) return false;
+  if (!(await tabExists(tabId))) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: renderOverlay,
+      args: [overlayContent(kind, warning)],
+    });
+    return true;
+  } catch {
+    // e.g. the tab shows a chrome:// page; the web-page modal still covers it.
+    return false;
+  }
+}
+
+async function isTabActive(tabId, windowId = null) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (windowId !== null && tab.windowId !== windowId) return false;
+    return Boolean(tab.active);
+  } catch {
+    return false;
+  }
+}
+
+async function showPendingWarning(tabId) {
+  const session = await readSession();
+  if (!session?.pendingWarning) return false;
+  const shown = await showOverlay(tabId, "warning", session.pendingWarning);
+  if (shown) await patchSession({ pendingWarning: null });
+  return shown;
+}
+
+async function showOverlayOnExamTab(kind) {
+  const session = await readSession();
+  if (!session?.examTabId) return false;
+  return showOverlay(session.examTabId, kind);
 }
 
 /* ----------------------------- Capture listeners ----------------------------- */
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   const session = await readSession();
   if (!session?.monitoring) return;
+
   let url = null;
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
@@ -426,7 +676,24 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   } catch {
     /* tab already gone */
   }
-  await enqueueEvent("TAB_SWITCH", {
+
+  // Back on the exam tab: close the episode and surface the pending warning.
+  if (session.examTabId && activeInfo.tabId === session.examTabId) {
+    await queueEvent(
+      "FOCUS_RESTORED",
+      {
+        tabId: activeInfo.tabId,
+        windowId: activeInfo.windowId,
+        url,
+        metadata: { reason: "exam_tab_returned" },
+      },
+      { priority: true },
+    );
+    if (session.pendingWarning) await showPendingWarning(activeInfo.tabId);
+    return;
+  }
+
+  await queueEvent("TAB_SWITCH", {
     tabId: activeInfo.tabId,
     windowId: activeInfo.windowId,
     url,
@@ -437,7 +704,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 chrome.tabs.onCreated.addListener(async (tab) => {
   const session = await readSession();
   if (!session?.monitoring) return;
-  await enqueueEvent("NEW_TAB", {
+  await queueEvent("NEW_TAB", {
     tabId: tab.id,
     windowId: tab.windowId,
     url: tab.url ?? null,
@@ -451,14 +718,14 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
   if (tabId === session.examTabId) {
     // The exam tab itself was closed: keep the timer running, flag for the proctor.
     await patchSession({ examTabId: null });
-    await enqueueEvent("TAB_CLOSED", {
+    await queueEvent("TAB_CLOSED", {
       tabId,
       windowId: removeInfo.windowId,
       metadata: { examTab: true, isWindowClosing: Boolean(removeInfo.isWindowClosing) },
     });
     return;
   }
-  await enqueueEvent("TAB_CLOSED", {
+  await queueEvent("TAB_CLOSED", {
     tabId,
     windowId: removeInfo.windowId,
     metadata: { isWindowClosing: Boolean(removeInfo.isWindowClosing) },
@@ -469,21 +736,60 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!changeInfo.url) return;
   const session = await readSession();
   if (!session?.monitoring) return;
-  await enqueueEvent("NAVIGATION", {
-    tabId,
-    windowId: tab.windowId,
-    url: changeInfo.url,
-    metadata: { host: hostOf(changeInfo.url) },
-  });
+  // Only the exam tab's navigations matter: leaving that tab is the violation.
+  // Navigating in a different tab (or the proctor dashboard) is not the
+  // participant leaving the form.
+  if (!session.examTabId || tabId !== session.examTabId) return;
+
+  const examHost = hostOf(session.googleFormsUrl ?? "");
+  const nextHost = hostOf(changeInfo.url);
+  // Google redirects forms.gle → docs.google.com; both are still the exam page.
+  const googleFormHosts = new Set(["docs.google.com", "forms.google.com", "forms.gle"]);
+  const sameExamHost = Boolean(
+    nextHost &&
+      (nextHost === examHost || (googleFormHosts.has(nextHost) && googleFormHosts.has(examHost ?? ""))),
+  );
+
+  // Navigating inside the exam form (redirect, reload, page transition) is not
+  // "leaving the exam"; only a navigation to another host is a violation.
+  if (!sameExamHost) {
+    await queueEvent("NAVIGATION", {
+      tabId,
+      windowId: tab.windowId,
+      url: changeInfo.url,
+      metadata: { host: nextHost },
+    });
+  }
+
+  // Navigating back into the exam form is another "returned to the exam page"
+  // moment, even though the tab never lost activation.
+  if (sameExamHost && session.pendingWarning) {
+    await showPendingWarning(tabId);
+  }
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   const session = await readSession();
   if (!session?.monitoring) return;
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    await enqueueEvent("FOCUS_LOST", { metadata: { reason: "window_blur" } });
-  } else {
-    await enqueueEvent("FOCUS_RESTORED", { metadata: { reason: "window_focus" } });
+    await queueEvent("FOCUS_LOST", { metadata: { reason: "window_blur" } }, { priority: true });
+    return;
+  }
+
+  const examTabActive =
+    session.examTabId !== null && session.examTabId !== undefined
+      ? await isTabActive(session.examTabId, windowId)
+      : false;
+
+  if (!examTabActive) {
+    // Another browser window came forward while the exam tab is not in view.
+    await queueEvent("FOCUS_LOST", { metadata: { reason: "window_switched" } }, { priority: true });
+    return;
+  }
+
+  await queueEvent("FOCUS_RESTORED", { metadata: { reason: "window_focus" } }, { priority: true });
+  if (session.pendingWarning) {
+    await showPendingWarning(session.examTabId);
   }
 });
 
@@ -502,7 +808,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Fallback when the waiting-room page is closed or was navigated away:
     // detect that the exam went live and launch the form automatically.
     const session = await readSession();
-    if (!session?.participantSessionId || session.monitoring || session.needsAttention) return;
+    if (!session?.participantSessionId || session.monitoring || session.needsAttention || session.ended) return;
     if (!session.googleFormsUrl) return;
     const state = await fetchSessionState(session);
     if (!state) return;
@@ -522,6 +828,7 @@ const RELAYED_TYPES = new Set([
   "stop_monitoring",
   "get_state",
   "open_participant_page",
+  "violation_warning",
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -552,7 +859,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           examTabId: sender.tab?.id ?? current.examTabId ?? null,
           apiBase: nextApiBase,
           monitoring: false,
+          ended: false,
           needsAttention: false,
+          pendingWarning: null,
         });
         await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
         await updateBadge();
@@ -575,8 +884,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       case "exam_ended": {
-        await stopMonitoring("exam_ended");
+        const status =
+          typeof message.payload?.status === "string" ? message.payload.status : "COMPLETED";
+        await handleExamEnded(status);
         await chrome.alarms.clear(WATCH_ALARM);
+        sendResponse({ ok: true });
+        break;
+      }
+      case "violation_warning": {
+        const session = await readSession();
+        if (!session) {
+          sendResponse({ ok: false, reason: "no_session" });
+          break;
+        }
+        const warning = {
+          incidentType:
+            typeof message.payload?.incidentType === "string"
+              ? message.payload.incidentType
+              : "TAB_SWITCH",
+          eventCount: Number(message.payload?.eventCount ?? 1) || 1,
+          startedAt:
+            typeof message.payload?.startedAt === "string" ? message.payload.startedAt : null,
+        };
+        // Always remember it: the participant usually sees it after returning
+        // to the exam tab, not while the violation is happening.
+        await patchSession({ pendingWarning: warning });
+        const examTabActive = session.examTabId ? await isTabActive(session.examTabId) : false;
+        if (examTabActive) {
+          const shown = await showOverlay(session.examTabId, "warning", warning);
+          if (shown) await patchSession({ pendingWarning: null });
+        }
         sendResponse({ ok: true });
         break;
       }

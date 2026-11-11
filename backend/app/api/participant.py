@@ -16,9 +16,10 @@ from ..audit import record_audit
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip
-from ..models import Exam, ExamSession, ParticipantSession, utcnow
+from ..models import Exam, ExamSession, ParticipantSession, ViolationIncident, utcnow
 from ..ratelimit import SlidingWindowRateLimiter
 from ..schemas import (
+    HeartbeatResponse,
     MessageResponse,
     MonitoringEventIn,
     MonitoringEventOut,
@@ -28,7 +29,7 @@ from ..schemas import (
     ReconnectRequest,
 )
 from ..security import constant_time_equals, hash_token, new_opaque_token
-from ..services.exams import registration_window_state, time_remaining_seconds
+from ..services.exams import ensure_utc, registration_window_state, time_remaining_seconds
 from ..services.identity import IdentityError, google_auth_required, verify_google_id_token
 from ..services.monitoring import record_event
 from ..services.participants import (
@@ -207,17 +208,37 @@ def get_session(participant_session_id: str, db: Db, token: ParticipantToken = N
     return _session_out(db, ps)
 
 
-@router.post("/heartbeat", response_model=MessageResponse)
-async def heartbeat(payload: ReconnectRequest, db: Db, token: ParticipantToken = None) -> MessageResponse:
+@router.post("/heartbeat", response_model=HeartbeatResponse)
+async def heartbeat(payload: ReconnectRequest, db: Db, token: ParticipantToken = None) -> HeartbeatResponse:
+    """Accept a liveness ping and tell the client exactly where the clock stands.
+
+    The extension relies on this to show the "exam ended" overlay without
+    keeping its own timer, and the participant page gets the same information
+    over its WebSocket.
+    """
     ps = _authorize(db, payload.participant_session_id, token)
     record_heartbeat(db, ps)
     db.commit()
 
     exam_session = db.get(ExamSession, ps.exam_session_id)
     remaining = time_remaining_seconds(exam_session) if exam_session else 0
-    if exam_session and remaining == 0 and ps.status not in {"COMPLETED", "TIME_EXPIRED"}:
-        await manager.send_to_participant(ps.id, envelope("time_expired", {"participant_session_id": ps.id}))
-    return MessageResponse(message=f"ok:{remaining}")
+    effective_status = ps.status
+    if (
+        exam_session is not None
+        and remaining == 0
+        and ps.status not in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}
+    ):
+        effective_status = "TIME_EXPIRED"
+        await manager.send_to_participant(
+            ps.id,
+            envelope("time_expired", {"participant_session_id": ps.id, "status": "TIME_EXPIRED"}),
+        )
+    return HeartbeatResponse(
+        message=f"ok:{remaining}",
+        status=effective_status,
+        remaining_seconds=remaining,
+        ends_at=ensure_utc(exam_session.ends_at) if exam_session else None,
+    )
 
 
 @router.post("/ready", response_model=ParticipantSessionOut)
@@ -301,33 +322,68 @@ async def submit_events(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ujian tidak sedang berlangsung.")
 
     stored: list[MonitoringEventOut] = []
+    payloads: list[dict] = []
+    correlated: dict[str, ViolationIncident] = {}
     for item in events:
         event, incident = record_event(db, ps, item)
         stored.append(MonitoringEventOut.model_validate(event))
+        payloads.append(
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "received_at": event.received_at,
+                "page_host": event.page_host,
+                "incident_id": event.incident_id,
+            }
+        )
+        if incident is not None:
+            correlated.setdefault(incident.id, incident)
+    db.commit()
+
+    # One frame per batch instead of one frame per event: a burst of 20 events
+    # no longer means 20 WebSocket messages to every proctor.
+    if payloads:
         await manager.send_to_exam(
             exam_session.id,
             envelope(
                 "monitoring_event",
                 {
                     "participant_session_id": ps.id,
-                    "event_type": event.event_type,
-                    "received_at": event.received_at,
-                    "page_host": event.page_host,
+                    "event_type": payloads[-1]["event_type"],
+                    "received_at": payloads[-1]["received_at"],
+                    "page_host": payloads[-1]["page_host"],
+                    "events": payloads,
                 },
             ),
         )
-        if incident is not None:
-            await manager.send_to_exam(
-                exam_session.id,
-                envelope(
-                    "incident_created",
-                    {
-                        "incident_id": incident.id,
-                        "participant_session_id": ps.id,
-                        "incident_type": incident.incident_type,
-                        "event_count": incident.event_count,
-                    },
-                ),
-            )
-    db.commit()
+
+    for incident in correlated.values():
+        await manager.send_to_exam(
+            exam_session.id,
+            envelope(
+                "incident_created",
+                {
+                    "incident_id": incident.id,
+                    "participant_session_id": ps.id,
+                    "incident_type": incident.incident_type,
+                    "event_count": incident.event_count,
+                    "started_at": incident.started_at,
+                    "review_status": incident.review_status,
+                },
+            ),
+        )
+        # Tell the participant's own page so it can raise a warning popup.
+        await manager.send_to_participant(
+            ps.id,
+            envelope(
+                "violation_warning",
+                {
+                    "participant_session_id": ps.id,
+                    "incident_id": incident.id,
+                    "incident_type": incident.incident_type,
+                    "event_count": incident.event_count,
+                    "started_at": incident.started_at,
+                },
+            ),
+        )
     return stored

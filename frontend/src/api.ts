@@ -190,6 +190,8 @@ export const api = {
   overview: () => request<import("./types").OverviewStats>("/dashboard/overview"),
   monitor: (examId: string) =>
     request<import("./types").ParticipantCard[]>(`/exams/${examId}/monitor`),
+  monitorState: (examId: string) =>
+    request<import("./types").MonitoringState>(`/exams/${examId}/monitor/state`),
   participantDetail: (participantSessionId: string) =>
     request<import("./types").ParticipantDetail>(`/participant-sessions/${participantSessionId}`),
   listIncidents: (examId: string, reviewStatus?: string) =>
@@ -301,7 +303,7 @@ export const participantApi = {
       body: { participant_session_id: participantSessionId },
     }),
   heartbeat: (participantSessionId: string) =>
-    participantRequest<{ message: string }>("/participant/heartbeat", {
+    participantRequest<import("./types").HeartbeatAck>("/participant/heartbeat", {
       method: "POST",
       body: { participant_session_id: participantSessionId },
     }),

@@ -17,7 +17,7 @@ cd backend
 python -m pytest -q
 ```
 
-85 tests across ten modules:
+89 tests across eleven modules:
 
 | File | Coverage |
 |---|---|
@@ -25,7 +25,7 @@ python -m pytest -q
 | `tests/test_auth.py` | first-run setup, single-use setup, login, CSRF, audit of failed logins |
 | `tests/test_registration.py` | Exam-ID-only access, normalized-name match, typo rejection, NPM not a key, commitment enforcement, duplicate resume, ambiguous roster, rate limiting |
 | `tests/test_exam_lifecycle.py` | exam-code generation, URL validation, server-authoritative deadline, start/end, invalid transitions, expiry worker, disconnect ≠ cheating |
-| `tests/test_monitoring.py` | readiness gating, token enforcement, incident creation, idempotency, episode closing, review audit, connection badges |
+| `tests/test_monitoring.py` | readiness gating, token enforcement, incident creation, idempotency, episode closing, review audit, connection badges, combined monitor state, heartbeat timer payload, time-expired heartbeat |
 | `tests/test_rbac.py` | proctor creation, admin-only actions, exam scoping, per-permission start/export denial, deactivation |
 | `tests/test_roster_reports.py` | CSV preview/commit, duplicate detection, roster uniqueness, CSV/XLSX export |
 | `tests/test_participant_payload.py` | NPM masking, no roster leakage, roster immutability |
@@ -59,13 +59,18 @@ Load `extension/` unpacked in Chrome and verify:
 2. Register with Exam ID + name + commitment → the waiting room appears in that same tab.
 3. Proctor starts the exam → the extension navigates that same tab to the Google
    Forms URL, verifies the load, then marks the participant `MONITORING`.
-4. Switch tabs / open a tab / blur the window → events are captured; the badge
-   shows the pending count.
-5. Disable the network → the buffer grows; re-enable → events flush in batches.
-6. Exam ends → the extension stops capture, flushes, and clears its alarms.
+4. Switch tabs for less than a second → the incident is uploaded immediately
+   (violation events bypass the 30 s flush alarm).
+5. Return to the exam tab → an in-page **Peringatan pelanggaran** overlay
+   appears on the Google Form; the dashboard card updates in realtime.
+6. Open a new tab / blur the window → events are captured; the badge shows the
+   pending count.
+7. Disable the network → the buffer grows; re-enable → events flush in batches.
+8. Exam ends or time runs out → the exam tab shows the end/time-up overlay and
+   the extension stops capture, flushes, and clears its alarms.
 
 Automated equivalent (loads the unpacked extension in Chromium and asserts the
-whole flow, 12 checks):
+whole flow, 23 checks):
 
 ```bash
 cd frontend
@@ -73,8 +78,25 @@ npm install --no-save puppeteer-core
 CHROME_PATH="<path-to-chromium>" node scripts/extension_e2e.mjs http://127.0.0.1:5173
 ```
 
-> Branded Chrome 137+ ignores `--load-extension`. Use Chrome for Testing,
-> Chromium, or load the folder manually via `chrome://extensions`.
+The script needs the backend and Vite running locally (`:8000` and `:5173`) and
+uses the extension's default `apiBase` from the page origin.
+
+- `CHROME_PATH` must point at Chromium / Chrome for Testing. Branded Chrome 137+
+  ignores `--load-extension`; otherwise load the folder manually via
+  `chrome://extensions`.
+- `E2E_DB` (optional) points at the live SQLite file
+  (`backend/data/<name>.db`). The script then rewrites `exam_sessions.ends_at`
+  into the past to exercise the `TIME_EXPIRED` overlay. Without it the
+  proctor-ended (`COMPLETED`) overlay is checked instead.
+- `PYTHON` (optional) selects the interpreter used for that SQLite update
+  (default `python`).
+
+The check list covers: no popup, action click opens `/join`, tab id persistence,
+bridge detection, stored session/token/apiBase, same-tab reuse, Google Forms
+navigation, badge, backend `MONITORING`, the bundled `monitor/state` payload,
+no premature overlay, realtime card rendering and update, fast tab-switch
+incident capture, warning overlay on return, the end/time-up overlay, and the
+extension stopping monitoring.
 
 ## Manual end-to-end smoke test
 

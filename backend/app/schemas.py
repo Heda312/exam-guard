@@ -259,6 +259,13 @@ class HeartbeatRequest(BaseModel):
     participant_session_id: str
 
 
+class HeartbeatResponse(BaseModel):
+    message: str
+    status: str
+    remaining_seconds: int = 0
+    ends_at: Optional[datetime] = None
+
+
 class ReadyRequest(BaseModel):
     participant_session_id: str
     page_url: Optional[str] = None
@@ -330,6 +337,8 @@ class ParticipantCard(BaseModel):
     connection_state: str
     online: bool
     incident_count: int
+    last_incident_at: Optional[datetime] = None
+    last_incident_type: Optional[str] = None
     last_activity_at: Optional[datetime]
     latest_event_summary: Optional[str]
     last_heartbeat_at: Optional[datetime]
@@ -340,6 +349,30 @@ class ParticipantDetail(ParticipantCard):
     commitment: dict[str, Any]
     events: list[MonitoringEventOut]
     incidents: list[IncidentOut]
+
+
+class MonitoringTimerOut(BaseModel):
+    exam_id: str
+    exam_session_id: Optional[str] = None
+    status: str
+    session_status: Optional[str] = None
+    server_time: datetime
+    started_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    remaining_seconds: int = 0
+
+
+class MonitoringStateOut(BaseModel):
+    """Single payload for the live monitoring dashboard.
+
+    Bundling cards, incidents and the timer removes two extra HTTP round-trips
+    per refresh (and per WebSocket burst) compared with calling three endpoints.
+    """
+
+    cards: list[ParticipantCard]
+    incidents: list[IncidentOut]
+    timer: MonitoringTimerOut
+    server_time: datetime
 
 
 # --- Dashboard -------------------------------------------------------------

@@ -177,3 +177,18 @@ export function formatDuration(totalSeconds: number): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
+
+/** Compact "baru saja / 12 dtk lalu / 3 mnt lalu" label for live data. */
+export function formatRelative(value: string | null | undefined, now = Date.now()): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  const seconds = Math.max(0, Math.round((now - date.getTime()) / 1000));
+  if (seconds < 5) return "baru saja";
+  if (seconds < 60) return `${seconds} dtk lalu`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} mnt lalu`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} jam lalu`;
+  return formatDateTime(value);
+}

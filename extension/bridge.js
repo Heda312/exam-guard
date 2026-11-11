@@ -19,6 +19,7 @@
     "stop_monitoring",
     "get_state",
     "open_participant_page",
+    "violation_warning",
   ]);
 
   function sendToPage(type, payload = {}) {

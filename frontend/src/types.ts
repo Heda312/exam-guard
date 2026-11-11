@@ -140,6 +140,8 @@ export interface ParticipantCard {
   connection_state: string;
   online: boolean;
   incident_count: number;
+  last_incident_at: string | null;
+  last_incident_type: string | null;
   last_activity_at: string | null;
   latest_event_summary: string | null;
   last_heartbeat_at: string | null;
@@ -214,6 +216,20 @@ export interface ExamTimer {
   started_at: string | null;
   ends_at: string | null;
   remaining_seconds: number;
+}
+
+export interface MonitoringState {
+  cards: ParticipantCard[];
+  incidents: Incident[];
+  timer: ExamTimer;
+  server_time: string;
+}
+
+export interface HeartbeatAck {
+  message: string;
+  status: string;
+  remaining_seconds: number;
+  ends_at: string | null;
 }
 
 export interface ParticipantConfig {
