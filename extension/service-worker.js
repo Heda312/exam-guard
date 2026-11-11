@@ -1,27 +1,68 @@
 /**
- * ExamGuard MV3 service worker.
+ * ExamGuard MV3 service worker — participant entry point.
  *
- * Responsibilities (spec §14):
- *  - Keep the active participant session in chrome.storage.session.
- *  - Record only the events required for the active examination.
- *  - Buffer events durably and flush them in batches with retry.
- *  - Never persist full browsing history; store host names only.
+ * Spec v1.3 references implemented here:
+ *  §10.1 step 3-4  clicking the extension opens the participant registration page
+ *  §10.1 step 13   the extension opens/keeps one dedicated waiting-room tab
+ *  §10.1 step 15-18 on exam start the extension navigates that tab to Google Forms,
+ *                   waits for readiness, then the backend marks MONITORING
+ *  §10.3           the exam tab id is persisted in extension storage
+ *  §14.2-14.4      event capture, durable buffering, alarms-based flush/heartbeat
+ *
+ * There is no popup: the action click is the participant entry point, and status
+ * is surfaced in the participant web page plus the action badge.
  */
 
-const API_BASE = "https://exam.heda.my.id/api/v1";
+const DEFAULT_API_BASE = "https://exam.heda.my.id/api/v1";
+const JOIN_PATH = "/join";
+
+/** API base is derived from the participant page origin, so local and LAN
+ *  deployments work without editing the extension. */
+let apiBase = DEFAULT_API_BASE;
+
+async function resolveApiBase(session) {
+  if (session?.apiBase) apiBase = session.apiBase;
+  return apiBase;
+}
+
+function siteOrigin() {
+  return apiBase.replace(/\/api\/v1$/, "");
+}
+
 const FLUSH_ALARM = "examguard-flush";
 const HEARTBEAT_ALARM = "examguard-heartbeat";
+const WATCH_ALARM = "examguard-watch";
+
 const MAX_BATCH = 40;
 const MAX_BUFFER = 500;
 
 const SESSION_KEY = "session";
 const BUFFER_KEY = "eventBuffer";
-const CONFIG_KEY = "config";
 
-/** @returns {Promise<{session: any|null, config: any|null}>} */
-async function readState() {
-  const stored = await chrome.storage.session.get([SESSION_KEY, CONFIG_KEY]);
-  return { session: stored[SESSION_KEY] ?? null, config: stored[CONFIG_KEY] ?? null };
+/* ------------------------------------------------------------------ */
+/* Storage helpers                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Session context is persisted in `storage.local` (not `storage.session`) so an
+ * MV3 worker restart or a browser restart cannot lose an active exam tab or the
+ * participant token (spec §10.3).
+ */
+async function readSession() {
+  const stored = await chrome.storage.local.get(SESSION_KEY);
+  return stored[SESSION_KEY] ?? null;
+}
+
+async function writeSession(session) {
+  await chrome.storage.local.set({ [SESSION_KEY]: session });
+}
+
+async function patchSession(patch) {
+  const current = await readSession();
+  if (!current) return null;
+  const next = { ...current, ...patch };
+  await writeSession(next);
+  return next;
 }
 
 async function getBuffer() {
@@ -33,18 +74,256 @@ async function setBuffer(buffer) {
   await chrome.storage.local.set({ [BUFFER_KEY]: buffer.slice(-MAX_BUFFER) });
 }
 
+/* ------------------------------------------------------------------ */
+/* Badge                                                               */
+/* ------------------------------------------------------------------ */
+
+async function updateBadge() {
+  const session = await readSession();
+  const buffer = await getBuffer();
+
+  if (!session) {
+    await chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+  if (session.needsAttention) {
+    await chrome.action.setBadgeBackgroundColor({ color: "#B54745" });
+    await chrome.action.setBadgeText({ text: "!" });
+    return;
+  }
+  if (session.monitoring) {
+    await chrome.action.setBadgeBackgroundColor({ color: "#28543F" });
+    await chrome.action.setBadgeText({ text: buffer.length > 0 ? String(buffer.length) : "ON" });
+    return;
+  }
+  await chrome.action.setBadgeBackgroundColor({ color: "#C58A35" });
+  await chrome.action.setBadgeText({ text: "…" });
+}
+
+/* ------------------------------------------------------------------ */
+/* Entry point: open / focus the participant tab                       */
+/* ------------------------------------------------------------------ */
+
+function joinUrl(session) {
+  const base = siteOrigin();
+  return session?.examCode ? `${base}${JOIN_PATH}/${session.examCode}` : `${base}${JOIN_PATH}`;
+}
+
+async function tabExists(tabId) {
+  if (!tabId) return false;
+  try {
+    await chrome.tabs.get(tabId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function focusTab(tabId) {
+  const tab = await chrome.tabs.update(tabId, { active: true });
+  if (tab?.windowId !== undefined) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+  return tab;
+}
+
+/** Open the participant page, or focus the tab that is already serving it. */
+async function openParticipantPage() {
+  const session = await readSession();
+  await resolveApiBase(session);
+
+  if (session?.examTabId && (await tabExists(session.examTabId))) {
+    await focusTab(session.examTabId);
+    return session.examTabId;
+  }
+
+  const tab = await chrome.tabs.create({ url: joinUrl(session), active: true });
+  if (session) {
+    await patchSession({ examTabId: tab.id });
+  } else {
+    await writeSession({ examTabId: tab.id, monitoring: false, apiBase });
+  }
+  return tab.id;
+}
+
+chrome.action.onClicked.addListener(() => {
+  void openParticipantPage();
+});
+
+/* ------------------------------------------------------------------ */
+/* Exam lifecycle: waiting room → Google Forms → monitoring            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Navigate the persisted exam tab to the configured Google Forms URL, verify the
+ * navigation, then mark the participant READY and start monitoring (§10.1 15-18).
+ */
+async function launchExamForm() {
+  const session = await readSession();
+  if (!session?.googleFormsUrl) return false;
+
+  let tabId = session.examTabId;
+  if (!tabId || !(await tabExists(tabId))) {
+    const tab = await chrome.tabs.create({ url: session.googleFormsUrl, active: true });
+    tabId = tab.id;
+    await patchSession({ examTabId: tabId });
+  } else {
+    // Same-tab navigation (spec §10.3).
+    await chrome.tabs.update(tabId, { url: session.googleFormsUrl, active: true });
+    await focusTab(tabId);
+  }
+
+  const ready = await waitForExamForm(tabId, session.googleFormsUrl);
+  if (!ready) {
+    await patchSession({ needsAttention: true, lastError: "form_not_loaded" });
+    await updateBadge();
+    return false;
+  }
+
+  const okReady = await apiPost("/participant/ready", session, {
+    participant_session_id: session.participantSessionId,
+    page_url: session.googleFormsUrl,
+  });
+  if (!okReady) return false;
+
+  const okMonitoring = await apiPost("/participant/monitoring/start", session, {
+    participant_session_id: session.participantSessionId,
+  });
+  if (!okMonitoring) return false;
+
+  await patchSession({ monitoring: true, needsAttention: false, startedAt: Date.now() });
+  await startCapture();
+  await updateBadge();
+  return true;
+}
+
+/** Resolve once the tab finishes loading the expected host, or after a timeout. */
+function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
+  let expectedHost = "";
+  try {
+    expectedHost = new URL(expectedUrl).hostname.toLowerCase();
+  } catch {
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    function onUpdated(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status !== "complete") return;
+      let host = "";
+      try {
+        host = new URL(tab.url ?? "").hostname.toLowerCase();
+      } catch {
+        host = "";
+      }
+      finish(host === expectedHost);
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        let host = "";
+        try {
+          host = new URL(tab.url ?? "").hostname.toLowerCase();
+        } catch {
+          host = "";
+        }
+        finish(host === expectedHost && tab.status === "complete");
+      } catch {
+        finish(false);
+      }
+    }, timeoutMs);
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    // The tab may already be loaded by the time we attach the listener.
+    void (async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status === "complete" && tab.url) {
+          let host = "";
+          try {
+            host = new URL(tab.url).hostname.toLowerCase();
+          } catch {
+            host = "";
+          }
+          if (host === expectedHost) finish(true);
+        }
+      } catch {
+        finish(false);
+      }
+    })();
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* API helpers                                                         */
+/* ------------------------------------------------------------------ */
+
+async function apiPost(path, session, body) {
+  try {
+    const response = await fetch(`${apiBase}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Participant-Token": session.token ?? "",
+      },
+      body: JSON.stringify(body),
+    });
+    if (response.status === 401 || response.status === 403) {
+      await patchSession({ needsAttention: true, lastError: "token_rejected" });
+      await updateBadge();
+      return false;
+    }
+    return response.ok;
+  } catch {
+    await patchSession({ needsAttention: true, lastError: "network" });
+    await updateBadge();
+    return false;
+  }
+}
+
+async function fetchSessionState(session) {
+  try {
+    const response = await fetch(`${apiBase}/participant/session/${session.participantSessionId}`, {
+      headers: { "X-Participant-Token": session.token ?? "" },
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Event capture                                                       */
+/* ------------------------------------------------------------------ */
+
 function newEventId() {
   return `evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/**
- * Queue a raw monitoring event. Only meaningful while monitoring is active.
- * @param {string} type
- * @param {object} details
- */
+/** Host-only extraction: full URLs (with query strings) are never uploaded. */
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 async function enqueueEvent(type, details = {}) {
-  const { session } = await readState();
-  if (!session || session.monitoring !== true) return;
+  const session = await readSession();
+  if (!session?.monitoring) return;
 
   const event = {
     client_event_id: newEventId(),
@@ -62,52 +341,19 @@ async function enqueueEvent(type, details = {}) {
   await setBuffer(buffer);
   await updateBadge();
 
-  if (buffer.length >= 10) {
-    void flushEvents();
-  }
+  if (buffer.length >= 10) void flushEvents();
 }
 
-/** Host-only extraction: full URLs (with query strings) are never sent. */
-function hostOf(url) {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-async function updateBadge() {
-  const { session } = await readState();
-  const buffer = await getBuffer();
-  if (!session) {
-    await chrome.action.setBadgeText({ text: "" });
-    return;
-  }
-  if (session.monitoring) {
-    await chrome.action.setBadgeBackgroundColor({ color: "#28543F" });
-    await chrome.action.setBadgeText({ text: buffer.length > 0 ? String(buffer.length) : "ON" });
-  } else {
-    await chrome.action.setBadgeBackgroundColor({ color: "#C58A35" });
-    await chrome.action.setBadgeText({ text: "…" });
-  }
-}
-
-/**
- * Flush buffered events to the ExamGuard API.
- * Events are removed only after a confirmed 2xx response.
- */
 async function flushEvents() {
-  const { session } = await readState();
-  if (!session || !session.token) return;
+  const session = await readSession();
+  if (!session?.monitoring || !session.token) return;
 
   let buffer = await getBuffer();
-  if (buffer.length === 0) return;
-
   while (buffer.length > 0) {
     const batch = buffer.slice(0, MAX_BATCH);
     try {
       const response = await fetch(
-        `${API_BASE}/participant/events?participant_session_id=${encodeURIComponent(session.participantSessionId)}`,
+        `${apiBase}/participant/events?participant_session_id=${encodeURIComponent(session.participantSessionId)}`,
         {
           method: "POST",
           headers: {
@@ -119,34 +365,26 @@ async function flushEvents() {
       );
 
       if (response.status === 401 || response.status === 403) {
-        // Token rotated or session revoked: stop monitoring and surface the state.
-        await chrome.storage.session.set({
-          [SESSION_KEY]: { ...session, monitoring: false, needsAttention: true },
-        });
+        await patchSession({ monitoring: false, needsAttention: true, lastError: "token_rejected" });
         await updateBadge();
         return;
       }
-
-      if (!response.ok) {
-        // Keep events buffered and retry on the next alarm.
-        return;
-      }
+      if (!response.ok) return; // keep the buffer, retry on the next alarm
 
       buffer = buffer.slice(batch.length);
       await setBuffer(buffer);
       await updateBadge();
     } catch {
-      // Network failure: keep the buffer and retry later.
-      return;
+      return; // offline: keep buffering
     }
   }
 }
 
 async function heartbeat() {
-  const { session } = await readState();
-  if (!session || !session.token) return;
+  const session = await readSession();
+  if (!session?.token) return;
   try {
-    await fetch(`${API_BASE}/participant/heartbeat`, {
+    await fetch(`${apiBase}/participant/heartbeat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -159,40 +397,34 @@ async function heartbeat() {
   }
 }
 
-async function startMonitoring(session) {
-  const next = { ...session, monitoring: true, startedAt: Date.now() };
-  await chrome.storage.session.set({ [SESSION_KEY]: next });
-
+async function startCapture() {
   await chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 0.5 });
   await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
-  await updateBadge();
   await enqueueEvent("FOCUS_RESTORED", { metadata: { reason: "monitoring_started" } });
-  return next;
 }
 
 async function stopMonitoring(reason = "manual") {
-  const { session } = await readState();
+  const session = await readSession();
   if (!session) return null;
   await enqueueEvent("CONNECTION_LOST", { metadata: { reason } });
   await flushEvents();
-  const next = { ...session, monitoring: false, stoppedAt: Date.now() };
-  await chrome.storage.session.set({ [SESSION_KEY]: next });
   await chrome.alarms.clear(FLUSH_ALARM);
   await chrome.alarms.clear(HEARTBEAT_ALARM);
+  const next = await patchSession({ monitoring: false, stoppedAt: Date.now() });
   await updateBadge();
   return next;
 }
 
-/* ----------------------------- Event capture ----------------------------- */
+/* ----------------------------- Capture listeners ----------------------------- */
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const { session } = await readState();
+  const session = await readSession();
   if (!session?.monitoring) return;
   let url = null;
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     url = tab.url ?? null;
   } catch {
-    /* tab may already be gone */
+    /* tab already gone */
   }
   await enqueueEvent("TAB_SWITCH", {
     tabId: activeInfo.tabId,
@@ -203,7 +435,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 });
 
 chrome.tabs.onCreated.addListener(async (tab) => {
-  const { session } = await readState();
+  const session = await readSession();
   if (!session?.monitoring) return;
   await enqueueEvent("NEW_TAB", {
     tabId: tab.id,
@@ -214,8 +446,18 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
-  const { session } = await readState();
+  const session = await readSession();
   if (!session?.monitoring) return;
+  if (tabId === session.examTabId) {
+    // The exam tab itself was closed: keep the timer running, flag for the proctor.
+    await patchSession({ examTabId: null });
+    await enqueueEvent("TAB_CLOSED", {
+      tabId,
+      windowId: removeInfo.windowId,
+      metadata: { examTab: true, isWindowClosing: Boolean(removeInfo.isWindowClosing) },
+    });
+    return;
+  }
   await enqueueEvent("TAB_CLOSED", {
     tabId,
     windowId: removeInfo.windowId,
@@ -225,7 +467,7 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!changeInfo.url) return;
-  const { session } = await readState();
+  const session = await readSession();
   if (!session?.monitoring) return;
   await enqueueEvent("NAVIGATION", {
     tabId,
@@ -236,7 +478,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  const { session } = await readState();
+  const session = await readSession();
   if (!session?.monitoring) return;
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
     await enqueueEvent("FOCUS_LOST", { metadata: { reason: "window_blur" } });
@@ -245,64 +487,97 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   }
 });
 
+/* ------------------------------- Alarms ------------------------------------ */
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === FLUSH_ALARM) {
     await flushEvents();
-  } else if (alarm.name === HEARTBEAT_ALARM) {
+    return;
+  }
+  if (alarm.name === HEARTBEAT_ALARM) {
     await heartbeat();
     await flushEvents();
+    return;
+  }
+  if (alarm.name === WATCH_ALARM) {
+    // Fallback when the waiting-room page is closed or was navigated away:
+    // detect that the exam went live and launch the form automatically.
+    const session = await readSession();
+    if (!session?.participantSessionId || session.monitoring || session.needsAttention) return;
+    if (!session.googleFormsUrl) return;
+    const state = await fetchSessionState(session);
+    if (!state) return;
+    if (state.exam_status === "LIVE" && ["INITIALIZING", "READY", "REGISTERED", "WAITING"].includes(state.status)) {
+      await launchExamForm();
+    }
   }
 });
 
-/* ------------------------- Web page bridge (content) ------------------------- */
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+/* ----------------------- Web page bridge (content) -------------------------- */
+const RELAYED_TYPES = new Set([
+  "session_registered",
+  "exam_started",
+  "exam_ended",
+  "page_ready",
+  "monitoring_started",
+  "stop_monitoring",
+  "get_state",
+  "open_participant_page",
+]);
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
-    switch (message?.type) {
-      case "web_ready": {
-        sendResponse({ ok: true, extension: true });
+    if (!message || !RELAYED_TYPES.has(message.type)) {
+      sendResponse({ ok: false, reason: "unknown_message" });
+      return;
+    }
+
+    switch (message.type) {
+      case "open_participant_page": {
+        sendResponse({ ok: true, tabId: await openParticipantPage() });
         break;
       }
       case "session_registered": {
-        await chrome.storage.session.set({
-          [SESSION_KEY]: {
-            participantSessionId: message.payload.participantSessionId,
-            examCode: message.payload.examCode,
-            googleFormsUrl: message.payload.googleFormsUrl,
-            token: message.payload.token ?? null,
-            monitoring: false,
-          },
+        const current = (await readSession()) ?? {};
+        // Derive the API base from the page that registered, so the extension
+        // works against localhost, LAN hosts and production without edits.
+        const pageOrigin = sender.tab?.url ? new URL(sender.tab.url).origin : null;
+        const nextApiBase = pageOrigin ? `${pageOrigin}/api/v1` : current.apiBase ?? DEFAULT_API_BASE;
+        apiBase = nextApiBase;
+        await writeSession({
+          ...current,
+          participantSessionId: message.payload.participantSessionId,
+          examCode: message.payload.examCode,
+          googleFormsUrl: message.payload.googleFormsUrl ?? null,
+          token: message.payload.token ?? current.token ?? null,
+          examTabId: sender.tab?.id ?? current.examTabId ?? null,
+          apiBase: nextApiBase,
+          monitoring: false,
+          needsAttention: false,
         });
+        await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
         await updateBadge();
         sendResponse({ ok: true });
         break;
       }
-      case "page_ready":
-      case "monitoring_started": {
-        const { session } = await readState();
-        if (session) {
-          const next = await startMonitoring({
-            ...session,
-            googleFormsUrl: message.payload.googleFormsUrl ?? session.googleFormsUrl,
-          });
-          sendResponse({ ok: true, session: next });
-        } else {
-          sendResponse({ ok: false, reason: "no_session" });
-        }
+      case "exam_started": {
+        await patchSession({
+          googleFormsUrl: message.payload.googleFormsUrl ?? (await readSession())?.googleFormsUrl ?? null,
+          examTabId: message.payload.examTabId ?? (await readSession())?.examTabId ?? null,
+        });
+        const launched = await launchExamForm();
+        sendResponse({ ok: launched });
         break;
       }
-      case "open_form": {
-        const url = message.payload?.url;
-        if (url) {
-          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tabs[0]?.id) {
-            await chrome.tabs.update(tabs[0].id, { url });
-          } else {
-            await chrome.tabs.create({ url });
-          }
-          sendResponse({ ok: true });
-        } else {
-          sendResponse({ ok: false, reason: "no_url" });
-        }
+      case "page_ready":
+      case "monitoring_started": {
+        const launched = await launchExamForm();
+        sendResponse({ ok: launched });
+        break;
+      }
+      case "exam_ended": {
+        await stopMonitoring("exam_ended");
+        await chrome.alarms.clear(WATCH_ALARM);
+        sendResponse({ ok: true });
         break;
       }
       case "stop_monitoring": {
@@ -310,29 +585,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "get_state": {
-        const state = await readState();
+        const session = await readSession();
         const buffer = await getBuffer();
-        sendResponse({ ok: true, session: state.session, buffered: buffer.length });
+        sendResponse({
+          ok: true,
+          session,
+          buffered: buffer.length,
+          version: chrome.runtime.getManifest().version,
+        });
         break;
       }
       default:
-        sendResponse({ ok: false, reason: "unknown_message" });
+        sendResponse({ ok: false, reason: "unhandled" });
     }
   })();
-  return true; // keep the message channel open for the async response
+  return true; // async response
 });
 
-/* ------------------------------- Lifecycle ------------------------------- */
+/* ------------------------------- Lifecycle -------------------------------- */
 chrome.runtime.onInstalled.addListener(async () => {
-  await chrome.storage.session.set({ [SESSION_KEY]: null });
   await updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  const { session } = await readState();
+  const session = await readSession();
   if (session?.monitoring) {
     await chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 0.5 });
     await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
+  } else if (session?.participantSessionId) {
+    await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
   }
   await updateBadge();
 });

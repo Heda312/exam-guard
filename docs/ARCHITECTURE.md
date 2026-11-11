@@ -115,7 +115,39 @@ the dashboard badge.
   `TIME_EXPIRED`, and pushes `time_expired` over WebSocket.
 - Because the deadline is persisted, disconnection has no effect on the timer.
 
-## 6. Monitoring pipeline
+## 6. Extension entry point and exam launch
+
+The extension is a **participant** tool, not a proctor console. There is no popup:
+`chrome.action.onClicked` opens or focuses the participant page.
+
+```
+click icon ──▶ open/focus participant tab (examTabId persisted in storage.local)
+                        │
+                        ▼
+              register: Exam ID + full name + commitment
+                        │
+                        ▼
+                 waiting room (same tab)
+                        │ exam goes LIVE
+                        ▼
+     extension navigates examTabId → Google Forms URL (§10.3 same-tab)
+                        │ load verified against the expected host
+                        ▼
+        POST /participant/ready → POST /participant/monitoring/start
+                        │
+                        ▼
+             capture events → durable buffer → batch upload
+```
+
+The launch step can be triggered three ways, so a closed waiting-room tab does
+not stall the exam: the waiting room polls the session and posts `exam_started`,
+the participant clicks **Buka formulir ujian sekarang**, or the
+`examguard-watch` alarm re-checks the session server-side every 30 seconds.
+
+Monitoring status (active, buffered event count, attention required) is surfaced
+in the participant page and on the action badge instead of a popup.
+
+## 7. Monitoring pipeline
 
 ```
 extension service worker
@@ -141,7 +173,7 @@ Correlation rules (`services/monitoring.py`):
   opening a new one.
 - `CONNECTION_LOST` never creates an incident.
 
-## 7. Authorization
+## 8. Authorization
 
 `app/deps.py` provides the whole enforcement surface:
 
@@ -158,7 +190,7 @@ Permission flags enforced server-side: `can_view_exam`, `can_view_participants`,
 
 Frontend menu hiding is cosmetic only — every route re-checks on the server.
 
-## 8. Participant authentication
+## 9. Participant authentication
 
 Participants are not dashboard users. After a successful roster match the API
 returns `X-Participant-Token`, an opaque 32-byte URL-safe string. Only
@@ -166,7 +198,7 @@ returns `X-Participant-Token`, an opaque 32-byte URL-safe string. Only
 participant endpoint compares the supplied token in constant time and scopes the
 operation to that single participant session.
 
-## 9. Background worker
+## 10. Background worker
 
 `app/worker.py` runs inside the API lifespan:
 
@@ -175,7 +207,7 @@ operation to that single participant session.
   WebSocket is attached,
 - never mutates `monitoring_events` or `audit_logs`.
 
-## 10. Data minimisation
+## 11. Data minimisation
 
 - Event rows store `page_host` only; `page_url` is intentionally `NULL`.
 - Audit metadata never contains passwords or tokens.

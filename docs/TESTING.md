@@ -39,15 +39,28 @@ npm run build         # production bundle
 
 ## Extension
 
-Load `extension/` unpacked in Chrome and verify manually:
+Load `extension/` unpacked in Chrome and verify:
 
-1. Register a participant, then click **Aktifkan pemantauan**.
-2. Switch tabs → the popup badge increments and the dashboard card shows
-   *Berpindah tab*.
-3. Open a new tab, close it, blur the window → separate events appear.
-4. Disable the network → the buffer grows; re-enable → events flush in batches.
-5. Click **Hentikan pemantauan** → `CONNECTION_LOST` is recorded and no incident
-   is created.
+1. Click the toolbar icon → the participant page (`/join`) opens. There is no popup.
+2. Register with Exam ID + name + commitment → the waiting room appears in that same tab.
+3. Proctor starts the exam → the extension navigates that same tab to the Google
+   Forms URL, verifies the load, then marks the participant `MONITORING`.
+4. Switch tabs / open a tab / blur the window → events are captured; the badge
+   shows the pending count.
+5. Disable the network → the buffer grows; re-enable → events flush in batches.
+6. Exam ends → the extension stops capture, flushes, and clears its alarms.
+
+Automated equivalent (loads the unpacked extension in Chromium and asserts the
+whole flow, 12 checks):
+
+```bash
+cd frontend
+npm install --no-save puppeteer-core
+CHROME_PATH="<path-to-chromium>" node scripts/extension_e2e.mjs http://127.0.0.1:5173
+```
+
+> Branded Chrome 137+ ignores `--load-extension`. Use Chrome for Testing,
+> Chromium, or load the folder manually via `chrome://extensions`.
 
 ## Manual end-to-end smoke test
 
@@ -64,9 +77,10 @@ cd frontend && npm run dev
 3. Import a roster CSV containing `Alek Nurhabib`.
 4. Open `/join`, enter `EXG-2026-001`, `aleknurhabib` → registers, shows
    canonical name `Alek Nurhabib`.
-5. In the dashboard, **Mulai ujian** → participant page shows the countdown.
-6. Complete readiness → **Aktifkan pemantauan** → switch tabs.
-7. Dashboard shows an incident; **Tinjau** updates it and writes an audit entry.
+5. In the dashboard, **Mulai ujian** → the extension navigates the exam tab to the
+   form URL and monitoring starts; the participant page shows the countdown.
+6. Switch tabs in the participant browser → an incident appears in the dashboard.
+7. **Tinjau** updates the incident and writes an audit entry.
 8. **Akhiri ujian** → participant sees *Ujian selesai*.
 9. Export CSV and XLSX from the exam detail page.
 
@@ -76,4 +90,6 @@ cd frontend && npm run dev
   real credentials). The verifier is isolated in
   `services/identity.py::verify_google_id_token` and only invoked when
   `PARTICIPANT_IDENTITY_MODE=google`.
-- Real Chrome extension APIs (MV3) — verified manually as described above.
+- `chrome.action.onClicked` itself cannot be dispatched by automation; the
+  extension E2E exercises the same `openParticipantPage()` code path and asserts
+  the resulting tab, persisted tab id, and navigation.

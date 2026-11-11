@@ -25,6 +25,12 @@ export default function ParticipantPage() {
   const [busy, setBusy] = useState(false);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [extensionDetected, setExtensionDetected] = useState(false);
+  const [extensionVersion, setExtensionVersion] = useState<string | null>(null);
+  const [monitoringState, setMonitoringState] = useState<{
+    monitoring: boolean;
+    buffered: number;
+    needsAttention: boolean;
+  }>({ monitoring: false, buffered: 0, needsAttention: false });
   const heartbeatRef = useRef<number | null>(null);
 
   const isFinished = useMemo(
@@ -50,15 +56,45 @@ export default function ParticipantPage() {
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.source !== window) return;
-      const data = event.data as { source?: string; type?: string } | null;
-      if (data?.source === "examguard-extension") {
-        if (data.type === "extension_ready") setExtensionDetected(true);
+      const data = event.data as { source?: string; type?: string; payload?: Record<string, unknown> } | null;
+      if (data?.source !== "examguard-extension") return;
+      if (data.type === "extension_ready") {
+        setExtensionDetected(true);
+        const version = data.payload?.version;
+        if (typeof version === "string") setExtensionVersion(version);
       }
     }
     window.addEventListener("message", onMessage);
     notifyExtension("web_ready");
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  // Poll the extension for its monitoring state (replaces the removed popup).
+  useEffect(() => {
+    if (!extensionDetected) return;
+
+    function onState(event: MessageEvent) {
+      if (event.source !== window) return;
+      const data = event.data as
+        | { source?: string; type?: string; payload?: Record<string, unknown> }
+        | null;
+      if (data?.source !== "examguard-extension" || data.type !== "extension_state") return;
+      const payload = data.payload ?? {};
+      setMonitoringState({
+        monitoring: Boolean(payload.monitoring),
+        buffered: Number(payload.buffered ?? 0),
+        needsAttention: Boolean(payload.needsAttention),
+      });
+    }
+
+    window.addEventListener("message", onState);
+    const poll = window.setInterval(() => notifyExtension("get_state"), 3000);
+    notifyExtension("get_state");
+    return () => {
+      window.removeEventListener("message", onState);
+      window.clearInterval(poll);
+    };
+  }, [extensionDetected]);
 
   // Resume an existing session on reload.
   useEffect(() => {
@@ -157,54 +193,34 @@ export default function ParticipantPage() {
     }
   }
 
-  async function handleReady() {
-    if (!session) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await participantApi.ready(
-        session.participant_session_id,
-        window.location.href,
-      );
-      setSession(updated);
-      setPhase(resolvePhase(updated));
-      notifyExtension("page_ready", { participantSessionId: updated.participant_session_id });
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleStartMonitoring() {
-    if (!session) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await participantApi.startMonitoring(session.participant_session_id);
-      setSession(updated);
-      setPhase(resolvePhase(updated));
-      notifyExtension("monitoring_started", {
-        participantSessionId: updated.participant_session_id,
-        googleFormsUrl: updated.google_forms_url,
-      });
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function refreshSession() {
     if (!session) return;
     try {
       const updated = await participantApi.session(session.participant_session_id);
       setSession(updated);
       setPhase(resolvePhase(updated));
+      // When the exam goes live, let the extension navigate the exam tab to the
+      // Google Forms URL and start monitoring (spec §10.1 steps 15-18, §10.3).
+      if (updated.exam_status === "LIVE" && ["INITIALIZING", "READY"].includes(updated.status)) {
+        notifyExtension("exam_started", {
+          participantSessionId: updated.participant_session_id,
+          googleFormsUrl: updated.google_forms_url,
+        });
+      }
     } catch (err) {
       setError(errorMessage(err));
     }
   }
+
+  // Poll the waiting room so the exam start is picked up without manual refresh.
+  useEffect(() => {
+    if (phase !== "waiting" || !session) return;
+    const poll = window.setInterval(() => {
+      void refreshSession();
+    }, 5000);
+    return () => window.clearInterval(poll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, session?.participant_session_id]);
 
   useEffect(() => {
     if (remaining === 0 && session && !isFinished) {
@@ -213,10 +229,22 @@ export default function ParticipantPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining]);
 
+  // Tell the extension when the exam is over so it stops capture and flushes.
+  useEffect(() => {
+    if (!isFinished || !session) return;
+    notifyExtension("exam_ended", { participantSessionId: session.participant_session_id });
+  }, [isFinished, session]);
+
   /* ------------------------------ Render ----------------------------- */
   return (
     <div className="participant-shell">
-      <div className="participant-panel">
+      <div
+        className="participant-panel"
+        data-extension={extensionDetected ? "ready" : "missing"}
+        data-extension-version={extensionVersion ?? ""}
+        data-participant-status={session?.status ?? ""}
+        data-phase={phase}
+      >
         <div className="participant-hero">
           <div className="row-between">
             <div>
@@ -366,6 +394,14 @@ export default function ParticipantPage() {
                     Status sesi: <strong>{session.status}</strong>
                   </span>
                 </div>
+                <div className="row mt-16" style={{ gap: 8 }}>
+                  <span className={`badge ${extensionDetected ? "badge-success" : "badge-warning"}`}>
+                    {extensionDetected ? "Extension siap" : "Extension belum terdeteksi"}
+                  </span>
+                  <span className="small muted">
+                    Formulir akan terbuka otomatis di tab ini saat ujian dimulai.
+                  </span>
+                </div>
               </div>
 
               <div className="alert alert-info">
@@ -402,53 +438,37 @@ export default function ParticipantPage() {
               ))}
 
               <div className="card" style={{ background: "rgba(220,231,217,0.35)" }}>
-                <h3 style={{ fontSize: 16, marginBottom: 6 }}>Langkah berikutnya</h3>
-                <ol className="small muted" style={{ paddingLeft: 18, margin: 0 }}>
-                  <li>Pastikan extension ExamGuard aktif di Chrome Anda.</li>
-                  <li>
-                    Klik <strong>Buka formulir ujian</strong>. Halaman formulir akan dibuka pada tab
-                    yang sama.
-                  </li>
-                  <li>
-                    Setelah formulir termuat, kembali ke tab ini bila perlu dan klik{" "}
-                    <strong>Aktifkan pemantauan</strong>.
-                  </li>
-                </ol>
-                <div className="row mt-16">
+                <h3 style={{ fontSize: 16, marginBottom: 6 }}>Formulir ujian</h3>
+                <p className="small muted" style={{ marginBottom: 12 }}>
+                  Extension akan membuka formulir ujian pada tab ini secara otomatis begitu ujian
+                  dimulai, lalu memulai pemantauan setelah formulir termuat.
+                </p>
+                <div className="row">
                   {session.google_forms_url ? (
                     <button
                       type="button"
                       className="btn btn-primary"
                       onClick={() => {
-                        notifyExtension("open_form", {
+                        // The extension owns the exam tab, so it performs the navigation.
+                        notifyExtension("exam_started", {
                           participantSessionId: session.participant_session_id,
-                          url: session.google_forms_url,
+                          googleFormsUrl: session.google_forms_url,
                         });
-                        window.location.href = session.google_forms_url!;
                       }}
                     >
-                      Buka formulir ujian
-                    </button>
-                  ) : null}
-                  {session.status === "INITIALIZING" ? (
-                    <button type="button" className="btn btn-secondary" onClick={handleReady} disabled={busy}>
-                      Halaman ujian sudah siap
-                    </button>
-                  ) : null}
-                  {session.status === "READY" ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={handleStartMonitoring}
-                      disabled={busy}
-                    >
-                      Aktifkan pemantauan
+                      Buka formulir ujian sekarang
                     </button>
                   ) : null}
                   <button type="button" className="btn btn-ghost" onClick={refreshSession}>
                     Perbarui status
                   </button>
                 </div>
+                {!extensionDetected ? (
+                  <div className="small mt-16" style={{ color: "var(--warning-500)" }}>
+                    Extension ExamGuard belum terdeteksi. Pasang dan aktifkan extension agar formulir
+                    dapat dibuka otomatis.
+                  </div>
+                ) : null}
               </div>
 
               <div className="alert alert-info">
@@ -459,11 +479,33 @@ export default function ParticipantPage() {
                 </div>
               </div>
 
-              <div className="row">
-                <span className={`badge ${extensionDetected ? "badge-success" : "badge-warning"}`}>
-                  {extensionDetected ? "Extension terdeteksi" : "Extension belum terdeteksi"}
-                </span>
-                <span className="small muted">Terakhir disinkronkan {formatTime(session.server_time)}</span>
+              <div className="card" style={{ background: "rgba(220,231,217,0.3)" }}>
+                <h3 style={{ fontSize: 15, marginBottom: 10 }}>Status pemantauan</h3>
+                <div className="row" style={{ gap: 10 }}>
+                  <span className={`badge ${extensionDetected ? "badge-success" : "badge-warning"}`}>
+                    {extensionDetected
+                      ? `Extension aktif${extensionVersion ? ` v${extensionVersion}` : ""}`
+                      : "Extension belum terdeteksi"}
+                  </span>
+                  <span className={`badge ${monitoringState.monitoring ? "badge-online" : "badge-neutral"}`}>
+                    {monitoringState.monitoring ? "Pemantauan berjalan" : "Pemantauan belum aktif"}
+                  </span>
+                  {monitoringState.needsAttention ? (
+                    <span className="badge badge-danger">Perlu tindakan</span>
+                  ) : null}
+                </div>
+                <div className="small muted mt-16">
+                  {monitoringState.buffered > 0
+                    ? `${monitoringState.buffered} event menunggu dikirim ke server.`
+                    : "Semua event sudah terkirim ke server."}
+                  {" "}Terakhir disinkronkan {formatTime(session.server_time)}.
+                </div>
+                {monitoringState.needsAttention ? (
+                  <div className="small mt-16" style={{ color: "var(--danger-600)" }}>
+                    Sesi pemantauan perlu disegarkan. Muat ulang halaman ini, atau hubungi pengawas
+                    bila masalah berlanjut.
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}

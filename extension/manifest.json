@@ -1,22 +1,23 @@
 {
   "manifest_version": 3,
   "name": "ExamGuard — Exam Session Monitor",
-  "version": "1.3.0",
-  "description": "Memantau aktivitas browser selama sesi ujian ExamGuard berlangsung.",
+  "version": "1.4.0",
+  "description": "Membuka halaman peserta ExamGuard dan memantau aktivitas browser selama ujian berlangsung.",
   "minimum_chrome_version": "114",
-  "permissions": ["tabs", "storage", "alarms", "scripting"],
+  "permissions": ["tabs", "storage", "alarms"],
   "host_permissions": [
     "https://exam.heda.my.id/*",
     "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*"
+    "http://127.0.0.1:8000/*",
+    "http://localhost:5173/*",
+    "http://127.0.0.1:5173/*"
   ],
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
   },
   "action": {
-    "default_title": "ExamGuard",
-    "default_popup": "popup.html"
+    "default_title": "Buka ExamGuard"
   },
   "icons": {
     "16": "icons/icon16.png",
@@ -25,16 +26,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://exam.heda.my.id/*", "http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "matches": [
+        "https://exam.heda.my.id/*",
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
       "js": ["bridge.js"],
       "run_at": "document_start",
       "all_frames": false
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["popup.html"],
-      "matches": ["https://exam.heda.my.id/*"]
     }
   ]
 }

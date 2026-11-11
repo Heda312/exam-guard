@@ -1,12 +1,15 @@
 # Screenshots
 
-Captured from the running application (Chrome, headless) by
-`frontend/scripts/ui_shots.mjs`. Regenerate with:
+Captured from the running application (Chromium, automated) by
+`frontend/scripts/ui_shots.mjs` and `frontend/scripts/extension_e2e.mjs`.
+
+Regenerate:
 
 ```bash
 cd frontend
 npm install --no-save puppeteer-core
-node scripts/ui_shots.mjs http://127.0.0.1:5199
+node scripts/ui_shots.mjs http://127.0.0.1:5173
+CHROME_PATH="<path-to-chromium>" node scripts/extension_e2e.mjs http://127.0.0.1:5173
 ```
 
 | File | Screen |
@@ -28,6 +31,8 @@ node scripts/ui_shots.mjs http://127.0.0.1:5199
 | `15-proctors.png` | Proctor account management |
 | `16-audit.png` | Audit log |
 | `17-mobile-dashboard.png` | Responsive mobile layout |
+| `ext-01-join.png` | Extension entry point: clicking the icon opens the participant page (no popup) |
+| `ext-02-waiting.png` | Waiting room in the same tab, extension bridge detected |
 
 Design tokens follow spec §4.2: forest `#18392C`/`#28543F`, sage `#91AA91`/`#DCE7D9`,
 beige `#F1EBDD`/`#FFFCF6`, stone `#5F665F`, danger `#B54745`, warning `#C58A35`.
