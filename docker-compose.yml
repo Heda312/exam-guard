@@ -36,7 +36,10 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-production}
       # --- database ---
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-examguard}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-examguard}
+      # Override DATABASE_URL explicitly when POSTGRES_PASSWORD contains
+      # characters that are unsafe in a URL (for example @, / or ?); the value
+      # must be URL-encoded in that case.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-examguard}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-examguard}}
       # Migrasi dijalankan oleh entrypoint, jadi tabel tidak dibuat otomatis.
       AUTO_CREATE_TABLES: "false"
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
@@ -56,6 +59,7 @@ services:
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
       SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-720}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
       # --- participant identity ---
       PARTICIPANT_IDENTITY_MODE: ${PARTICIPANT_IDENTITY_MODE:-none}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

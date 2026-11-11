@@ -241,7 +241,58 @@ docker compose up -d
 
 ---
 
-## 8. Scaling notes
+## 8. Troubleshooting
+
+### `dependency api failed to start` / `exam-guard-api-1 is unhealthy`
+
+That message comes from the `web` container: it waits for the API healthcheck.
+The real error is always in the API logs.
+
+```bash
+docker compose ps                          # which container is unhealthy/exited?
+docker compose logs --tail=200 api         # entrypoint step that failed
+docker inspect --format '{{json .State.Health}}' exam-guard-api-1
+```
+
+The entrypoint prints a `[entrypoint] GAGAL: …` hint naming the failing step.
+The usual causes, in order of frequency:
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `Database tidak dapat dijangkau` | `db` is not ready, the password is wrong, or the `db_data` volume was created with a different password | check `docker compose logs db`; if the volume is stale and the data is disposable: `docker compose down -v && docker compose up -d --build` |
+| same, with `could not translate host name` / `invalid dsn` | `@`, `/`, `?` or `%` in `POSTGRES_PASSWORD` breaks the generated URL | use an alphanumeric password, or set `DATABASE_URL` in `.env` with a URL-encoded password |
+| `GAGAL: migrasi database error` | a migration failed (usually a pre-existing/inconsistent schema) | read the alembic traceback; check `alembic current` / `alembic history` |
+| `BOOTSTRAP_ADMIN_PASSWORD ditolak` | first boot and the env password is < 10 chars or has no digit | set a valid `BOOTSTRAP_ADMIN_PASSWORD` (letters + digits), or empty both `BOOTSTRAP_ADMIN_EMAIL`/`PASSWORD` |
+| `Address already in use` | `API_PORT` conflicts inside the container network | leave `API_PORT=8000` unless you know why |
+| nothing after `Menjalankan API…` | uvicorn import/config error | the traceback is directly below that line |
+
+After fixing `.env`, recreate only the affected containers:
+
+```bash
+docker compose up -d --force-recreate api web
+```
+
+Notes:
+
+- The bootstrap step is skipped automatically once an administrator exists, so
+  clearing or changing `BOOTSTRAP_ADMIN_*` after the first successful boot can
+  never take the API down.
+- `docker compose down -v` **deletes the database volume**. Back up first if the
+  deployment already holds real data.
+- If the API is healthy but `web` is not, check `docker compose logs web` and
+  `docker compose exec web nginx -t`.
+
+### Checking the API directly
+
+```bash
+docker compose exec api curl -fsS http://127.0.0.1:8000/health
+docker compose exec web curl -fsS http://127.0.0.1/healthz
+curl -fsS http://127.0.0.1:${WEB_PORT:-9200}/health
+```
+
+---
+
+## 9. Scaling notes
 
 - The API is a single container by design. Running multiple replicas requires:
   - a shared rate limiter (Redis), and

@@ -38,30 +38,12 @@ def _mark_setup_completed(db) -> None:
 
 
 def ensure_bootstrap_admin() -> int:
-    """Create the initial admin if configured. Returns an exit code."""
-    email = (settings.bootstrap_admin_email or "").strip().lower()
-    password = settings.bootstrap_admin_password or ""
-    full_name = (settings.bootstrap_admin_name or "Administrator").strip()
+    """Create the initial admin if configured. Returns an exit code.
 
-    if not email and not password:
-        logger.info(
-            "BOOTSTRAP_ADMIN_EMAIL/PASSWORD tidak diset — lewati pembuatan admin otomatis."
-        )
-        return 0
-
-    if not email or not password:
-        logger.error(
-            "Bootstrap admin tidak lengkap: isi BOOTSTRAP_ADMIN_EMAIL dan "
-            "BOOTSTRAP_ADMIN_PASSWORD sekaligus, atau kosongkan keduanya."
-        )
-        return 1
-
-    try:
-        validate_password_strength(password)
-    except ValueError as exc:
-        logger.error("BOOTSTRAP_ADMIN_PASSWORD ditolak: %s", exc)
-        return 1
-
+    An existing administrator short-circuits this function *before* the
+    environment is validated: once the deployment is bootstrapped, editing or
+    clearing ``BOOTSTRAP_ADMIN_*`` (as docs advise) must never crash the API.
+    """
     db = SessionLocal()
     try:
         existing_admin = db.scalar(select(User).where(User.role == "ADMIN").limit(1))
@@ -70,9 +52,33 @@ def ensure_bootstrap_admin() -> int:
             _mark_setup_completed(db)
             db.commit()
             logger.info(
-                "Admin sudah ada (%s) — bootstrap dilewati.", existing_admin.email
+                "Admin sudah ada (%s) — bootstrap dilewati; BOOTSTRAP_ADMIN_* diabaikan.",
+                existing_admin.email,
             )
             return 0
+
+        email = (settings.bootstrap_admin_email or "").strip().lower()
+        password = settings.bootstrap_admin_password or ""
+        full_name = (settings.bootstrap_admin_name or "Administrator").strip()
+
+        if not email and not password:
+            logger.info(
+                "BOOTSTRAP_ADMIN_EMAIL/PASSWORD tidak diset — lewati pembuatan admin otomatis."
+            )
+            return 0
+
+        if not email or not password:
+            logger.error(
+                "Bootstrap admin tidak lengkap: isi BOOTSTRAP_ADMIN_EMAIL dan "
+                "BOOTSTRAP_ADMIN_PASSWORD sekaligus, atau kosongkan keduanya."
+            )
+            return 1
+
+        try:
+            validate_password_strength(password)
+        except ValueError as exc:
+            logger.error("BOOTSTRAP_ADMIN_PASSWORD ditolak: %s", exc)
+            return 1
 
         clash = db.scalar(select(User).where(User.email == email))
         if clash is not None:

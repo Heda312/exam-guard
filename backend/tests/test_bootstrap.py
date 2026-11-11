@@ -59,6 +59,21 @@ def test_bootstrap_rejects_partial_configuration(monkeypatch, db) -> None:
     assert db.scalar(select(User).where(User.role == "ADMIN")) is None
 
 
+def test_bootstrap_ignores_bad_config_once_admin_exists(monkeypatch, db) -> None:
+    """Clearing BOOTSTRAP_ADMIN_* after first boot must not crash the API."""
+    assert _run_bootstrap(monkeypatch, "boot@example.com", "SandiKuat123") == 0
+
+    # Operator empties the password (as .env.example suggests) — still healthy.
+    monkeypatch.setattr(settings, "bootstrap_admin_password", "")
+    assert bootstrap.ensure_bootstrap_admin() == 0
+
+    # Even a now-too-weak password is irrelevant: nothing is being created.
+    assert _run_bootstrap(monkeypatch, "boot@example.com", "short") == 0
+
+    admins = db.scalars(select(User).where(User.role == "ADMIN")).all()
+    assert len(admins) == 1
+
+
 def test_bootstrap_rejects_weak_password(monkeypatch, db) -> None:
     assert _run_bootstrap(monkeypatch, "boot@example.com", "short") == 1
     assert db.scalar(select(User).where(User.role == "ADMIN")) is None

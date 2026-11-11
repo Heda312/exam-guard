@@ -25,7 +25,7 @@ process environment or a `.env` file. Booleans accept `true`/`false`/`1`/`0`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///./data/examguard.db` | `postgres://` and `postgresql://` are auto-normalized to `postgresql+psycopg://` |
+| `DATABASE_URL` | `sqlite:///./data/examguard.db` | `postgres://` and `postgresql://` are auto-normalized to `postgresql+psycopg://`. In Compose it defaults to the `POSTGRES_*` values; set it explicitly (URL-encoded) when the password contains `@`, `/`, `?` or `%` |
 | `AUTO_CREATE_TABLES` | `true` | Create tables at startup. The production container sets `false` and runs Alembic instead |
 | `RUN_MIGRATIONS` | `true` | Docker only: the entrypoint runs `alembic upgrade head` before starting |
 
