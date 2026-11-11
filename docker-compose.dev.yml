@@ -10,10 +10,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Install the test/smoke tooling too, so `docker compose -f docker-compose.dev.yml
+    # exec api pytest` works inside the dev container.
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/requirements-dev.txt
+      && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      - ./backend/alembic:/app/alembic
       - ./backend/data:/app/data
+      - ./backend/requirements.txt:/app/requirements.txt:ro
+      - ./backend/requirements-dev.txt:/app/requirements-dev.txt:ro
     environment:
       APP_ENV: development
       DATABASE_URL: sqlite:////app/data/examguard.db

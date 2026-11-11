@@ -57,11 +57,14 @@ exam-guard/
 │   │   └── main.py           application factory
 │   ├── alembic/              migrations
 │   ├── tests/                pytest suite (75 tests)
+│   ├── requirements.txt      runtime dependencies
+│   ├── requirements-dev.txt  runtime + pytest/httpx/websockets
 │   ├── e2e_smoke.py          live API smoke test (36 checks)
 │   └── ws_smoke.py           live WebSocket smoke test
 ├── frontend/                 React dashboard + participant flow
+│   ├── package.json          frontend dependencies
 │   └── scripts/              ui_shots.mjs, extension_e2e.mjs
-├── extension/                Chrome MV3 participant extension
+├── extension/                Chrome MV3 participant extension (no dependencies)
 ├── deploy/                   nginx config + proxy includes
 ├── docs/                     architecture, API, decisions, runbooks, screenshots
 ├── Dockerfile                backend image
@@ -69,6 +72,20 @@ exam-guard/
 ├── docker-compose.yml        production profile (PostgreSQL + API + nginx)
 └── docker-compose.dev.yml    development profile (hot reload + SQLite)
 ```
+
+### Where the dependency files live
+
+This is a polyglot repository, so dependencies sit next to the component that
+uses them rather than in the repository root:
+
+| File | Component | Install |
+|---|---|---|
+| `backend/requirements.txt` | API runtime | `pip install -r requirements.txt` |
+| `backend/requirements-dev.txt` | API + tests + smoke scripts | `pip install -r requirements-dev.txt` |
+| `frontend/package.json` | Dashboard & participant page | `npm install` |
+| — | Extension | none (plain MV3, no build step) |
+
+`requirements-dev.txt` includes `requirements.txt` via `-r`, so it is a superset.
 
 ---
 
@@ -102,7 +119,11 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
+# Runtime only (just to run the API):
 pip install -r requirements.txt
+
+# Runtime + tests + smoke scripts (recommended for development):
+pip install -r requirements-dev.txt
 ```
 
 Create the environment file:
@@ -188,6 +209,16 @@ docker compose -f docker-compose.dev.yml up --build
 
 Setup secret: `dev-setup-secret`. The frontend container proxies `/api` and
 `/ws` to the `api` service over the Compose network.
+
+This profile also installs `requirements-dev.txt` inside the API container, so
+the test suite runs there too:
+
+```bash
+docker compose -f docker-compose.dev.yml exec api python -m pytest -q
+```
+
+The production image installs **runtime dependencies only** — it has no pytest,
+and that is intentional.
 
 ### Production profile (PostgreSQL + nginx)
 
@@ -382,6 +413,13 @@ often need changing:
 
 ## Tests
 
+All backend test tooling comes from `requirements-dev.txt`:
+
+```bash
+cd backend
+pip install -r requirements-dev.txt    # once
+```
+
 ### Backend unit/integration — 75 tests
 
 ```bash
@@ -411,7 +449,7 @@ Start the API first, then:
 ```bash
 cd backend
 python e2e_smoke.py http://127.0.0.1:8000     # 36 checks
-python ws_smoke.py  http://127.0.0.1:8000     # needs: pip install websockets
+python ws_smoke.py  http://127.0.0.1:8000
 ```
 
 ### Frontend

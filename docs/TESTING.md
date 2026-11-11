@@ -1,5 +1,15 @@
 # Testing
 
+## Dependencies
+
+```bash
+cd backend
+pip install -r requirements-dev.txt    # runtime + pytest, httpx, websockets
+```
+
+`requirements-dev.txt` is a superset of `requirements.txt` (it pulls it in with
+`-r`). The production image installs runtime dependencies only.
+
 ## Backend
 
 ```bash
@@ -7,7 +17,7 @@ cd backend
 python -m pytest -q
 ```
 
-68 tests across seven modules:
+75 tests across nine modules:
 
 | File | Coverage |
 |---|---|
@@ -18,6 +28,8 @@ python -m pytest -q
 | `tests/test_monitoring.py` | readiness gating, token enforcement, incident creation, idempotency, episode closing, review audit, connection badges |
 | `tests/test_rbac.py` | proctor creation, admin-only actions, exam scoping, per-permission start/export denial, deactivation |
 | `tests/test_roster_reports.py` | CSV preview/commit, duplicate detection, roster uniqueness, CSV/XLSX export |
+| `tests/test_participant_payload.py` | NPM masking, no roster leakage, roster immutability |
+| `tests/test_timestamps.py` | timezone-aware serialization (countdown regression guard) |
 
 The suite runs against an isolated SQLite database created in a temp directory
 (`tests/conftest.py`), drops all tables between tests, and never touches

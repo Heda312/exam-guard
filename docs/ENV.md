@@ -3,6 +3,15 @@
 All variables are read by `backend/app/config.py` (pydantic-settings) from the
 process environment or a `.env` file. Booleans accept `true`/`false`/`1`/`0`.
 
+## Dependency files
+
+| File | Scope |
+|---|---|
+| `backend/requirements.txt` | API runtime |
+| `backend/requirements-dev.txt` | Runtime + pytest, httpx, websockets (superset, uses `-r`) |
+| `frontend/package.json` | Dashboard & participant page |
+| `extension/` | No dependencies, no build step |
+
 ## Core
 
 | Variable | Default | Description |
