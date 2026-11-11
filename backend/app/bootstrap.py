@@ -4,7 +4,7 @@ Lets a production deployment start with nothing but a filled-in ``.env``:
 
 1. ``deploy/entrypoint.sh`` waits for the database and applies migrations.
 2. This module creates the initial administrator when
-   ``BOOTSTRAP_ADMIN_EMAIL`` and ``BOOTSTRAP_ADMIN_PASSWORD`` are set and no
+   ``BOOTSTRAP_ADMIN_USERNAME`` and ``BOOTSTRAP_ADMIN_PASSWORD`` are set and no
    administrator exists yet.
 3. It then marks first-run setup as completed so ``/setup`` is permanently
    disabled — no manual step in the browser.
@@ -53,23 +53,23 @@ def ensure_bootstrap_admin() -> int:
             db.commit()
             logger.info(
                 "Admin sudah ada (%s) — bootstrap dilewati; BOOTSTRAP_ADMIN_* diabaikan.",
-                existing_admin.email,
+                existing_admin.username,
             )
             return 0
 
-        email = (settings.bootstrap_admin_email or "").strip().lower()
+        username = (settings.bootstrap_admin_username or "").strip().lower()
         password = settings.bootstrap_admin_password or ""
         full_name = (settings.bootstrap_admin_name or "Administrator").strip()
 
-        if not email and not password:
+        if not username and not password:
             logger.info(
-                "BOOTSTRAP_ADMIN_EMAIL/PASSWORD tidak diset — lewati pembuatan admin otomatis."
+                "BOOTSTRAP_ADMIN_USERNAME/PASSWORD tidak diset — lewati pembuatan admin otomatis."
             )
             return 0
 
-        if not email or not password:
+        if not username or not password:
             logger.error(
-                "Bootstrap admin tidak lengkap: isi BOOTSTRAP_ADMIN_EMAIL dan "
+                "Bootstrap admin tidak lengkap: isi BOOTSTRAP_ADMIN_USERNAME dan "
                 "BOOTSTRAP_ADMIN_PASSWORD sekaligus, atau kosongkan keduanya."
             )
             return 1
@@ -80,31 +80,34 @@ def ensure_bootstrap_admin() -> int:
             logger.error("BOOTSTRAP_ADMIN_PASSWORD ditolak: %s", exc)
             return 1
 
-        clash = db.scalar(select(User).where(User.email == email))
+        clash = db.scalar(select(User).where(User.username == username))
         if clash is not None:
-            # Same email exists with a non-admin role: promote rather than fail.
+            # Same username exists with a non-admin role: promote rather than fail.
             clash.role = "ADMIN"
             clash.is_active = True
             clash.password_hash = hash_password(password)
-            clash.must_change_password = True
+            clash.must_change_password = False
             _mark_setup_completed(db)
             db.commit()
-            logger.warning("Akun %s dipromosikan menjadi ADMIN.", email)
+            logger.warning("Akun %s dipromosikan menjadi ADMIN.", username)
             return 0
 
         admin = User(
-            email=email,
+            username=username,
+            email=(settings.bootstrap_admin_email or "").strip().lower() or None,
             full_name=full_name,
             password_hash=hash_password(password),
             role="ADMIN",
             is_active=True,
-            must_change_password=True,
+            # The bootstrap password is the operator's own choice, so no forced
+            # rotation is needed to get in on first boot.
+            must_change_password=False,
         )
         db.add(admin)
         db.flush()
         _mark_setup_completed(db)
         db.commit()
-        logger.info("Admin awal dibuat: %s", email)
+        logger.info("Admin awal dibuat: %s", username)
         return 0
     except Exception:  # noqa: BLE001
         db.rollback()

@@ -77,7 +77,8 @@ class User(TimestampMixin, Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # ADMIN | PROCTOR

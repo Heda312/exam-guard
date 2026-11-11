@@ -7,7 +7,7 @@ interface AuthState {
   me: MeResponse | null;
   loading: boolean;
   error: string | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   canManageExam: (examId: string, permission: keyof ProctorPermissions) => boolean;
@@ -40,8 +40,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const response = await api.login({ email, password });
+  const login = useCallback(async (username: string, password: string) => {
+    const response = await api.login({ username, password });
     setMe(response);
     setError(null);
   }, []);

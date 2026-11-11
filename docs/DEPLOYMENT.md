@@ -36,8 +36,8 @@ SECRET_KEY=<openssl rand -hex 32>
 PUBLIC_BASE_URL=https://exam.heda.my.id
 
 # unattended first admin
-BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-BOOTSTRAP_ADMIN_PASSWORD=<strong-password, min 10 chars, letters+digits>
+BOOTSTRAP_ADMIN_USERNAME=heda
+BOOTSTRAP_ADMIN_PASSWORD=WedhusGembel5
 
 # host port published by nginx (Cloudflare Tunnel targets this)
 WEB_PORT=9200
@@ -68,7 +68,7 @@ Expected log sequence on first boot:
 [entrypoint] Menunggu database siap…
 [entrypoint] Menerapkan migrasi (alembic upgrade head)…
 [entrypoint] Memeriksa akun administrator awal…
-examguard.bootstrap: Admin awal dibuat: admin@example.com
+examguard.bootstrap: Admin awal dibuat: heda
 [entrypoint] Menjalankan API pada port 8000…
 ```
 
@@ -79,12 +79,14 @@ curl -fsS http://127.0.0.1:9200/healthz
 curl -fsS http://127.0.0.1:9200/health
 ```
 
-Then sign in at `https://exam.heda.my.id` with the bootstrap credentials. The
-account is flagged `must_change_password`, so you must set a new password before
-continuing. `/setup` is closed permanently because `SETUP_DISABLED=true`.
+Then sign in at `https://exam.heda.my.id` with the bootstrap credentials
+(`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`, default
+`heda` / `WedhusGembel5`). Staff accounts authenticate with a **username**, not an
+email. `/setup` is closed permanently because `SETUP_DISABLED=true`.
 
-Optionally remove the bootstrap password from disk afterwards (it is already a
-no-op once an admin exists):
+Change the password right after the first login (`/setup` will not help you
+later), then optionally remove it from disk — the bootstrap step is already a
+no-op once an admin exists:
 
 ```env
 BOOTSTRAP_ADMIN_PASSWORD=
@@ -137,7 +139,7 @@ PUBLIC_BASE_URL=http://192.168.1.6:9200
 CORS_ORIGINS=http://192.168.1.6:9200
 COOKIE_SECURE=false
 WEB_PORT=9200
-BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_USERNAME=heda
 BOOTSTRAP_ADMIN_PASSWORD=<strong-password>
 ```
 
@@ -262,7 +264,7 @@ The usual causes, in order of frequency:
 | `Database tidak dapat dijangkau` | `db` is not ready, the password is wrong, or the `db_data` volume was created with a different password | check `docker compose logs db`; if the volume is stale and the data is disposable: `docker compose down -v && docker compose up -d --build` |
 | same, with `could not translate host name` / `invalid dsn` | `@`, `/`, `?` or `%` in `POSTGRES_PASSWORD` breaks the generated URL | use an alphanumeric password, or set `DATABASE_URL` in `.env` with a URL-encoded password |
 | `GAGAL: migrasi database error` | a migration failed (usually a pre-existing/inconsistent schema) | read the alembic traceback; check `alembic current` / `alembic history` |
-| `BOOTSTRAP_ADMIN_PASSWORD ditolak` | first boot and the env password is < 10 chars or has no digit | set a valid `BOOTSTRAP_ADMIN_PASSWORD` (letters + digits), or empty both `BOOTSTRAP_ADMIN_EMAIL`/`PASSWORD` |
+| `BOOTSTRAP_ADMIN_PASSWORD ditolak` | first boot and the env password is < 10 chars or has no digit | set a valid `BOOTSTRAP_ADMIN_PASSWORD` (letters + digits), or empty both `BOOTSTRAP_ADMIN_USERNAME`/`PASSWORD` |
 | `Address already in use` | `API_PORT` conflicts inside the container network | leave `API_PORT=8000` unless you know why |
 | nothing after `Menjalankan API…` | uvicorn import/config error | the traceback is directly below that line |
 

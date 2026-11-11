@@ -80,7 +80,7 @@ def admin_client(client: TestClient) -> TestClient:
         "/api/v1/setup",
         json={
             "setup_secret": "test-setup-secret",
-            "email": "admin@example.com",
+            "username": "admin",
             "full_name": "Admin Utama",
             "password": "AdminRahasia123",
         },

@@ -44,9 +44,10 @@ Used by the Docker entrypoint so no browser step is needed.
 | Variable | Default | Description |
 |---|---|---|
 | `BOOTSTRAP_ADMIN_ENABLED` | `true` | Docker only: run the bootstrap step on start |
-| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | Initial admin email. With the password set, the account is created on first boot |
-| `BOOTSTRAP_ADMIN_PASSWORD` | *(empty)* | Initial admin password (≥10 chars, letters + digits). The admin must change it on first login |
+| `BOOTSTRAP_ADMIN_USERNAME` | `heda` | Initial admin username (staff log in with a username, not an email). With the password set, the account is created on first boot |
+| `BOOTSTRAP_ADMIN_PASSWORD` | `WedhusGembel5` | Initial admin password (≥10 chars, letters + digits). Change it after the first login |
 | `BOOTSTRAP_ADMIN_NAME` | `Administrator` | Display name for the initial admin |
+| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | Optional contact email. **Not** used for login |
 
 The step is idempotent: it does nothing once any administrator exists, and it
 marks first-run setup as completed.

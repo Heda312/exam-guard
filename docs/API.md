@@ -18,11 +18,14 @@ Error shape: `{"detail": "pesan"}` or `{"detail": {"field": "...", "message": ".
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/setup/status` | public | `{setup_required, setup_secret_configured}` |
-| POST | `/setup` | `SETUP_SECRET` | Create the first admin; permanently disables setup |
-| POST | `/auth/login` | public (rate limited) | Sets session + CSRF cookies |
+| POST | `/setup` | `SETUP_SECRET` | Create the first admin (`username` + password); permanently disables setup |
+| POST | `/auth/login` | public (rate limited) | Body `{username, password}`; sets session + CSRF cookies |
 | GET | `/auth/me` | session | Current user + permissions map |
 | POST | `/auth/logout` | session | Revokes the session |
 | POST | `/auth/change-password` | session + CSRF | Rotate own password |
+
+Staff accounts (admin and proctor) authenticate with a **username**, not an
+email. `email` still exists on the user record as optional contact information.
 
 ### Permission payload
 
@@ -52,6 +55,7 @@ For a proctor, `exams` lists `{exam_id, permissions:{can_view_exam, …}}` and t
 | POST | `/exams` | admin | — |
 | GET | `/exams/{exam_id}` | dashboard | `can_view_exam` |
 | PATCH | `/exams/{exam_id}` | admin | — |
+| DELETE | `/exams/{exam_id}` | admin | — (cascades roster, sessions, incidents, assignments; rejected while `LIVE`) |
 | POST | `/exams/{exam_id}/status` | dashboard | `can_start_exam` / `can_end_exam` for LIVE/COMPLETED |
 | POST | `/exams/{exam_id}/start` | dashboard | `can_start_exam` |
 | POST | `/exams/{exam_id}/end` | dashboard | `can_end_exam` |
@@ -108,7 +112,7 @@ Preview row statuses: `ok`, `duplicate_in_file`, `duplicate_in_roster`, `invalid
 | GET | `/admin/proctors` | admin |
 | POST | `/admin/proctors` | admin |
 | PATCH | `/admin/proctors/{proctor_id}` | admin |
-| DELETE | `/admin/proctors/{proctor_id}` | admin (soft deactivate) |
+| DELETE | `/admin/proctors/{proctor_id}` | admin (hard delete, also removes exam assignments) |
 | GET | `/admin/exams/{exam_id}/proctors` | admin |
 | POST | `/admin/exams/{exam_id}/proctors` | admin |
 | PATCH | `/admin/exams/{exam_id}/proctors/{assignment_id}` | admin |

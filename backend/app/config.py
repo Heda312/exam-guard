@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     # --- Unattended bootstrap (production convenience) --------------------
     # When both are set, the initial administrator is created on first boot and
     # /setup is disabled automatically — no browser step required.
+    bootstrap_admin_username: str = Field(default="heda")
     bootstrap_admin_email: str = Field(default="")
-    bootstrap_admin_password: str = Field(default="")
+    bootstrap_admin_password: str = Field(default="WedhusGembel5")
     bootstrap_admin_name: str = Field(default="Administrator")
 
     # --- Sessions ---------------------------------------------------------

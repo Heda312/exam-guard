@@ -95,9 +95,9 @@ export interface SetupStatus {
 
 export const api = {
   setupStatus: () => request<SetupStatus>("/setup/status"),
-  setup: (payload: { setup_secret: string; email: string; full_name: string; password: string }) =>
+  setup: (payload: { setup_secret: string; username: string; full_name: string; password: string }) =>
     request<import("./types").MeResponse>("/setup", { method: "POST", body: payload }),
-  login: (payload: { email: string; password: string }) =>
+  login: (payload: { username: string; password: string }) =>
     request<import("./types").MeResponse>("/auth/login", { method: "POST", body: payload }),
   me: () => request<import("./types").MeResponse>("/auth/me"),
   logout: () => request<{ message: string }>("/auth/logout", { method: "POST" }),
@@ -169,6 +169,12 @@ export const api = {
     request<import("./types").Proctor>(`/admin/proctors/${id}`, { method: "PATCH", body: payload }),
   deactivateProctor: (id: string) =>
     request<{ message: string }>(`/admin/proctors/${id}`, { method: "DELETE" }),
+  deleteProctor: (id: string) =>
+    request<{ message: string }>(`/admin/proctors/${id}`, { method: "DELETE" }),
+  deleteExam: (examId: string) =>
+    request<{ message: string }>(`/exams/${examId}`, { method: "DELETE" }),
+  removeRosterEntry: (examId: string, entryId: string) =>
+    request<{ message: string }>(`/exams/${examId}/roster/${entryId}`, { method: "DELETE" }),
   listExamProctors: (examId: string) =>
     request<import("./types").ExamProctorAssignment[]>(`/admin/exams/${examId}/proctors`),
   assignProctor: (examId: string, payload: { proctor_user_id: string; permissions: Record<string, boolean> }) =>

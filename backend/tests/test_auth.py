@@ -17,7 +17,7 @@ def test_setup_rejects_wrong_secret(client: TestClient) -> None:
         "/api/v1/setup",
         json={
             "setup_secret": "wrong-secret",
-            "email": "admin@example.com",
+            "username": "admin",
             "full_name": "Admin",
             "password": "AdminRahasia123",
         },
@@ -30,7 +30,7 @@ def test_setup_rejects_weak_password(client: TestClient) -> None:
         "/api/v1/setup",
         json={
             "setup_secret": "test-setup-secret",
-            "email": "admin@example.com",
+            "username": "admin",
             "full_name": "Admin",
             "password": "short",
         },
@@ -43,7 +43,7 @@ def test_setup_succeeds_once_and_sets_http_only_cookie(client: TestClient) -> No
         "/api/v1/setup",
         json={
             "setup_secret": "test-setup-secret",
-            "email": "admin@example.com",
+            "username": "admin",
             "full_name": "Admin Utama",
             "password": "AdminRahasia123",
         },
@@ -61,7 +61,7 @@ def test_setup_succeeds_once_and_sets_http_only_cookie(client: TestClient) -> No
         "/api/v1/setup",
         json={
             "setup_secret": "test-setup-secret",
-            "email": "other@example.com",
+            "username": "other",
             "full_name": "Other Admin",
             "password": "AdminRahasia123",
         },
@@ -73,7 +73,7 @@ def test_login_and_me(admin_client: TestClient) -> None:
     admin_client.post("/api/v1/auth/logout")
     response = admin_client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@example.com", "password": "AdminRahasia123"},
+        json={"username": "admin", "password": "AdminRahasia123"},
     )
     assert response.status_code == 200
     csrf = response.json()["csrf_token"]
@@ -88,7 +88,7 @@ def test_login_rejects_bad_password(admin_client: TestClient) -> None:
     admin_client.post("/api/v1/auth/logout")
     response = admin_client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@example.com", "password": "SalahBanget123"},
+        json={"username": "admin", "password": "SalahBanget123"},
     )
     assert response.status_code == 401
 
@@ -109,11 +109,11 @@ def test_audit_log_records_failed_login(client: TestClient, admin_client: TestCl
     admin_client.post("/api/v1/auth/logout")
     admin_client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@example.com", "password": "SalahBanget123"},
+        json={"username": "admin", "password": "SalahBanget123"},
     )
     admin_client.post(
         "/api/v1/auth/login",
-        json={"email": "admin@example.com", "password": "AdminRahasia123"},
+        json={"username": "admin", "password": "AdminRahasia123"},
     )
     logs = admin_client.get("/api/v1/audit-logs?action=auth.login_failed")
     assert logs.status_code == 200

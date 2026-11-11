@@ -855,6 +855,42 @@ tbody tr:hover {
   padding: 26px;
 }
 
+/* Violation warning: intentionally loud so the participant notices it. */
+.modal-panel.is-danger {
+  background: linear-gradient(180deg, #fff7f6 0%, #ffeae7 100%);
+  border: 1px solid var(--danger-600);
+  border-top: 6px solid var(--danger-600);
+  box-shadow: 0 24px 60px rgba(181, 71, 69, 0.32);
+  animation: modal-danger-in 220ms ease-out;
+}
+
+.modal-panel.is-danger .modal-title {
+  color: #991b1b;
+}
+
+.modal-lead {
+  font-size: 15px;
+  font-weight: 600;
+  color: #7f1d1d;
+  margin-bottom: 14px;
+}
+
+.modal-icon.is-danger {
+  background: var(--danger-600);
+  color: #fff;
+}
+
+@keyframes modal-danger-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .modal-title {
   font-size: 20px;
   margin-bottom: 8px;
@@ -941,6 +977,13 @@ tbody tr:hover {
   background: rgba(197, 138, 53, 0.12);
   border-color: rgba(197, 138, 53, 0.3);
   color: #7a5112;
+}
+
+.alert-danger {
+  background: rgba(181, 71, 69, 0.14);
+  border-color: rgba(181, 71, 69, 0.42);
+  color: #8c3230;
+  font-weight: 500;
 }
 
 .empty-state {

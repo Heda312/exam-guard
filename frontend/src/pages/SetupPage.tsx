@@ -9,7 +9,7 @@ export default function SetupPage() {
   const [secretConfigured, setSecretConfigured] = useState(true);
   const [form, setForm] = useState({
     setup_secret: "",
-    email: "",
+    username: "",
     full_name: "",
     password: "",
     confirm: "",
@@ -42,7 +42,7 @@ export default function SetupPage() {
     try {
       await api.setup({
         setup_secret: form.setup_secret,
-        email: form.email.trim(),
+        username: form.username.trim(),
         full_name: form.full_name.trim(),
         password: form.password,
       });
@@ -115,14 +115,14 @@ export default function SetupPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="email">Email administrator</label>
+            <label htmlFor="username">Username administrator</label>
             <input
-              id="email"
-              type="email"
-              value={form.email}
-              onChange={(event) => update("email", event.target.value)}
+              id="username"
+              type="text"
+              value={form.username}
+              onChange={(event) => update("username", event.target.value)}
               required
-              autoComplete="email"
+              autoComplete="username"
             />
           </div>
           <div className="form-row">

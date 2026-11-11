@@ -7,7 +7,7 @@ import { Alert } from "../ui";
 export default function LoginPage() {
   const { login, me } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -29,7 +29,7 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await login(email.trim(), password);
+      await login(username.trim(), password);
       navigate("/", { replace: true });
     } catch (err) {
       setError(errorMessage(err));
@@ -63,13 +63,13 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">
-            <label htmlFor="email">Email</label>
+            <label htmlFor="username">Username</label>
             <input
-              id="email"
-              type="email"
+              id="username"
+              type="text"
               autoComplete="username"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
               required
               aria-invalid={Boolean(error) || undefined}
             />

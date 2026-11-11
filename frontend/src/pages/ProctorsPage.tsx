@@ -26,7 +26,7 @@ export default function ProctorsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [form, setForm] = useState({ full_name: "", email: "", password: "" });
+  const [form, setForm] = useState({ full_name: "", username: "", password: "" });
   const [permissions, setPermissions] = useState({ ...DEFAULT_PERMISSIONS });
   const [busy, setBusy] = useState(false);
 
@@ -54,13 +54,13 @@ export default function ProctorsPage() {
     try {
       await api.createProctor({
         full_name: form.full_name.trim(),
-        email: form.email.trim(),
+        username: form.username.trim(),
         password: form.password,
         permissions,
       });
-      setForm({ full_name: "", email: "", password: "" });
+      setForm({ full_name: "", username: "", password: "" });
       setPermissions({ ...DEFAULT_PERMISSIONS });
-      setNotice("Akun proktor dibuat. Proktor harus mengganti kata sandi saat pertama masuk.");
+      setNotice("Akun proktor dibuat. Berikan username dan kata sandi kepada proktor.");
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -72,13 +72,8 @@ export default function ProctorsPage() {
   async function toggleActive(proctor: Proctor) {
     setBusy(true);
     try {
-      if (proctor.is_active) {
-        await api.deactivateProctor(proctor.id);
-        setNotice("Akun proktor dinonaktifkan.");
-      } else {
-        await api.updateProctor(proctor.id, { is_active: true });
-        setNotice("Akun proktor diaktifkan kembali.");
-      }
+      await api.updateProctor(proctor.id, { is_active: !proctor.is_active });
+      setNotice(proctor.is_active ? "Akun proktor dinonaktifkan." : "Akun proktor diaktifkan kembali.");
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -88,12 +83,31 @@ export default function ProctorsPage() {
   }
 
   async function resetPassword(proctor: Proctor) {
-    const password = window.prompt(`Kata sandi baru untuk ${proctor.email}:`);
+    const password = window.prompt(`Kata sandi baru untuk ${proctor.username}:`);
     if (!password) return;
     setBusy(true);
     try {
       await api.updateProctor(proctor.id, { password });
-      setNotice("Kata sandi proktor direset. Proktor harus menggantinya saat masuk.");
+      setNotice("Kata sandi proktor direset.");
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(proctor: Proctor) {
+    const confirmed = window.confirm(
+      `Hapus akun proktor "${proctor.full_name}" (${proctor.username})? ` +
+        "Semua penugasan ujiannya juga akan dihapus. Tindakan ini tidak dapat dibatalkan.",
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteProctor(proctor.id);
+      setNotice(`Akun proktor ${proctor.username} dihapus.`);
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -109,8 +123,8 @@ export default function ProctorsPage() {
           <div className="eyebrow">Manajemen akses</div>
           <h1>Proktor</h1>
           <p>
-            Proktor hanya dapat mengakses ujian yang ditugaskan kepadanya. Izin tambahan diatur per
-            ujian pada halaman detail ujian.
+            Proktor masuk dengan username dan kata sandi. Proktor hanya dapat mengakses ujian yang
+            ditugaskan kepadanya; izin tambahan diatur per ujian pada halaman detail ujian.
           </p>
         </div>
       </header>
@@ -138,17 +152,20 @@ export default function ProctorsPage() {
               />
             </div>
             <div className="field">
-              <label htmlFor="proctor_email">Email</label>
+              <label htmlFor="proctor_username">Username</label>
               <input
-                id="proctor_email"
-                type="email"
-                value={form.email}
-                onChange={(event) => setForm({ ...form, email: event.target.value })}
+                id="proctor_username"
+                type="text"
+                value={form.username}
+                onChange={(event) => setForm({ ...form, username: event.target.value })}
+                autoComplete="off"
+                minLength={3}
                 required
               />
+              <span className="hint">Dipakai untuk masuk. Tanpa spasi, minimal 3 karakter.</span>
             </div>
             <div className="field">
-              <label htmlFor="proctor_password">Kata sandi awal</label>
+              <label htmlFor="proctor_password">Kata sandi</label>
               <input
                 id="proctor_password"
                 type="password"
@@ -202,7 +219,7 @@ export default function ProctorsPage() {
               <thead>
                 <tr>
                   <th>Nama</th>
-                  <th>Email</th>
+                  <th>Username</th>
                   <th>Status</th>
                   <th>Ujian</th>
                   <th>Terakhir masuk</th>
@@ -213,7 +230,7 @@ export default function ProctorsPage() {
                 {proctors.map((proctor) => (
                   <tr key={proctor.id}>
                     <td>{proctor.full_name}</td>
-                    <td className="small muted">{proctor.email}</td>
+                    <td className="mono">{proctor.username}</td>
                     <td>
                       <span className={`badge ${proctor.is_active ? "badge-success" : "badge-neutral"}`}>
                         {proctor.is_active ? "Aktif" : "Nonaktif"}
@@ -238,6 +255,14 @@ export default function ProctorsPage() {
                           disabled={busy}
                         >
                           {proctor.is_active ? "Nonaktifkan" : "Aktifkan"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => remove(proctor)}
+                          disabled={busy}
+                        >
+                          Hapus
                         </button>
                       </div>
                     </td>

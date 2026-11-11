@@ -48,21 +48,21 @@ def create_proctor(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> ProctorOut:
-    email = payload.email.lower()
-    if db.scalar(select(User).where(User.email == email)) is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email sudah digunakan.")
+    username = payload.username.strip().lower()
+    if db.scalar(select(User).where(User.username == username)) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username sudah digunakan.")
     try:
         validate_password_strength(payload.password)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     proctor = User(
-        email=email,
+        username=username,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
         role="PROCTOR",
         is_active=True,
-        must_change_password=True,
+        must_change_password=False,
     )
     db.add(proctor)
     db.flush()
@@ -72,7 +72,7 @@ def create_proctor(
         actor=admin,
         resource_type="user",
         resource_id=proctor.id,
-        metadata={"email": email, "permissions": payload.permissions.model_dump()},
+        metadata={"username": username, "permissions": payload.permissions.model_dump()},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -95,13 +95,13 @@ def update_proctor(
     if payload.full_name is not None:
         proctor.full_name = payload.full_name.strip()
         changes["full_name"] = proctor.full_name
-    if payload.email is not None:
-        email = payload.email.lower()
-        existing = db.scalar(select(User).where(User.email == email, User.id != proctor.id))
+    if payload.username is not None:
+        username = payload.username.strip().lower()
+        existing = db.scalar(select(User).where(User.username == username, User.id != proctor.id))
         if existing is not None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email sudah digunakan.")
-        proctor.email = email
-        changes["email"] = email
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username sudah digunakan.")
+        proctor.username = username
+        changes["username"] = username
     if payload.is_active is not None:
         proctor.is_active = payload.is_active
         changes["is_active"] = payload.is_active
@@ -111,7 +111,7 @@ def update_proctor(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         proctor.password_hash = hash_password(payload.password)
-        proctor.must_change_password = True
+        proctor.must_change_password = False
         changes["password_reset"] = True
 
     record_audit(
@@ -128,26 +128,28 @@ def update_proctor(
 
 
 @router.delete("/proctors/{proctor_id}", response_model=MessageResponse)
-def deactivate_proctor(
+def delete_proctor(
     proctor_id: str,
     admin: AdminUser,
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> MessageResponse:
+    """Delete a proctor account and all of its exam assignments."""
     proctor = db.get(User, proctor_id)
     if proctor is None or proctor.role != "PROCTOR":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proktor tidak ditemukan.")
-    proctor.is_active = False
     record_audit(
         db,
-        action="proctor.deactivated",
+        action="proctor.deleted",
         actor=admin,
         resource_type="user",
         resource_id=proctor.id,
+        metadata={"username": proctor.username},
         ip_address=client_ip(request),
     )
+    db.delete(proctor)
     db.commit()
-    return MessageResponse(message="Akun proktor dinonaktifkan.")
+    return MessageResponse(message="Akun proktor dihapus.")
 
 
 @router.get("/exams/{exam_id}/proctors", response_model=list[ExamProctorOut])
@@ -166,7 +168,7 @@ def list_exam_proctors(
                 id=row.id,
                 exam_id=row.exam_id,
                 proctor_user_id=row.proctor_user_id,
-                proctor_email=proctor.email if proctor else "",
+                proctor_email=proctor.email if proctor and proctor.email else (proctor.username if proctor else ""),
                 proctor_full_name=proctor.full_name if proctor else "",
                 permissions=ProctorPermissions(
                     can_view_exam=row.can_view_exam,
@@ -234,7 +236,7 @@ def assign_proctor(
         id=assignment.id,
         exam_id=assignment.exam_id,
         proctor_user_id=assignment.proctor_user_id,
-        proctor_email=proctor.email,
+        proctor_email=proctor.email or proctor.username,
         proctor_full_name=proctor.full_name,
         permissions=payload.permissions,
         created_at=assignment.created_at,
@@ -276,7 +278,7 @@ def update_assignment(
         id=assignment.id,
         exam_id=assignment.exam_id,
         proctor_user_id=assignment.proctor_user_id,
-        proctor_email=proctor.email if proctor else "",
+        proctor_email=(proctor.email or proctor.username) if proctor else "",
         proctor_full_name=proctor.full_name if proctor else "",
         permissions=payload.permissions,
         created_at=assignment.created_at,

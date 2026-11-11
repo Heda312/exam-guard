@@ -236,7 +236,7 @@ Fill in these five values in `.env`:
 POSTGRES_PASSWORD=<strong-random-password>
 SECRET_KEY=<openssl rand -hex 32>
 PUBLIC_BASE_URL=https://exam.heda.my.id
-BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_USERNAME=heda
 BOOTSTRAP_ADMIN_PASSWORD=<strong-password, min 10 chars with letters+digits>
 ```
 
@@ -258,13 +258,14 @@ That is the entire deployment. On first boot the API logs:
 [entrypoint] Menunggu database siap…
 [entrypoint] Menerapkan migrasi (alembic upgrade head)…
 [entrypoint] Memeriksa akun administrator awal…
-examguard.bootstrap: Admin awal dibuat: admin@example.com
+examguard.bootstrap: Admin awal dibuat: heda
 [entrypoint] Menjalankan API pada port 8000…
 ```
 
 Log in immediately at `https://<your-domain>` with
-`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`. The admin is flagged
-`must_change_password`, so you are asked to set a new password on first login.
+`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` (default
+`heda` / `WedhusGembel5`). Staff accounts use a **username**, not an email.
+Change the password after the first login.
 
 | Service | Where |
 |---|---|
@@ -449,8 +450,9 @@ often need changing:
 | `DATABASE_URL` | `sqlite:///./data/examguard.db` | Use `postgresql+psycopg://…` for PostgreSQL |
 | `AUTO_CREATE_TABLES` | `true` | `false` in production; the container runs `alembic upgrade head` |
 | `SECRET_KEY` | `change-me-in-production` | **Must** be replaced in production |
-| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | With the password set, creates the first admin on boot |
-| `BOOTSTRAP_ADMIN_PASSWORD` | *(empty)* | Min 10 chars, letters + digits; admin must change it on first login |
+| `BOOTSTRAP_ADMIN_USERNAME` | `heda` | With the password set, creates the first admin on boot |
+| `BOOTSTRAP_ADMIN_PASSWORD` | `WedhusGembel5` | Min 10 chars, letters + digits. Change it after the first login |
+| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | Optional contact email; not used for login |
 | `SETUP_SECRET` | *(empty)* | Only for the browser wizard; not needed in production |
 | `SETUP_DISABLED` | `false` | `true` closes `/setup` permanently |
 | `COOKIE_SECURE` | `true` | `false` only for plain HTTP |
@@ -562,7 +564,7 @@ Architecture, state machines, and the realtime flow:
 | Symptom | Cause / fix |
 |---|---|
 | `/setup` says the setup secret is invalid | Local only: `SETUP_SECRET` in `backend/.env` differs from what you typed; restart the API after editing `.env` |
-| Cannot log in after `docker compose up` | Check `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` are set, then `docker compose logs api \| grep -i bootstrap` |
+| Cannot log in after `docker compose up` | Check `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` are set, then `docker compose logs api \| grep -i bootstrap` |
 | `docker compose logs api` shows "Bootstrap admin tidak lengkap" | Only one of the two bootstrap variables is set — set both or neither |
 | Bootstrap password rejected | Policy requires ≥10 chars with letters **and** digits |
 | Login succeeds but every request returns 401 | `COOKIE_SECURE=true` while browsing over plain HTTP — set it to `false` |

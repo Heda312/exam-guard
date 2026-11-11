@@ -170,12 +170,12 @@ def first_run_setup(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    email = payload.email.lower()
-    if db.scalar(select(User).where(User.email == email)) is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email sudah digunakan.")
+    username = payload.username.strip().lower()
+    if db.scalar(select(User).where(User.username == username)) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username sudah digunakan.")
 
     admin = User(
-        email=email,
+        username=username,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
         role="ADMIN",
@@ -209,7 +209,8 @@ def login(
     db: Annotated[Session, Depends(get_db)],
 ) -> MeResponse:
     ip = client_ip(request) or "unknown"
-    key = f"{ip}:{payload.email.lower()}"
+    username = payload.username.strip().lower()
+    key = f"{ip}:{username}"
     allowed, retry_after = login_limiter.check(key)
     if not allowed:
         raise HTTPException(
@@ -218,17 +219,17 @@ def login(
             headers={"Retry-After": str(int(retry_after) + 1)},
         )
 
-    user: Optional[User] = db.scalar(select(User).where(User.email == payload.email.lower()))
+    user: Optional[User] = db.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(payload.password, user.password_hash):
         record_audit(
             db,
             action="auth.login_failed",
-            actor_label=payload.email.lower(),
+            actor_label=username,
             metadata={"reason": "invalid_credentials"},
             ip_address=ip,
             commit=True,
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email atau kata sandi salah.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Username atau kata sandi salah.")
     if not user.is_active:
         record_audit(
             db,

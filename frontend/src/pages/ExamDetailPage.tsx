@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api";
 import { useAuth } from "../auth";
 import type { Exam, ExamProctorAssignment, Proctor, RosterEntry, RosterImportPreview } from "../types";
@@ -16,6 +16,7 @@ type Tab = "roster" | "proctors" | "settings";
 
 export default function ExamDetailPage() {
   const { examId = "" } = useParams();
+  const navigate = useNavigate();
   const { me, canManageExam } = useAuth();
   const [exam, setExam] = useState<Exam | null>(null);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
@@ -81,6 +82,25 @@ export default function ExamDetailPage() {
     }
   }
 
+  async function handleDelete() {
+    if (
+      !window.confirm(
+        "Hapus ujian ini secara permanen? Roster, sesi peserta, insiden, dan penugasan proktor " +
+          "ikut terhapus. Tindakan ini tidak dapat dibatalkan.",
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    try {
+      await api.deleteExam(examId);
+      navigate("/exams", { replace: true });
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   if (loading) return <LoadingBlock rows={4} />;
   if (!exam) return <Alert tone="error">{error ?? "Ujian tidak ditemukan."}</Alert>;
 
@@ -125,6 +145,11 @@ export default function ExamDetailPage() {
                 Ekspor XLSX
               </a>
             </>
+          ) : null}
+          {isAdmin && exam.status !== "LIVE" ? (
+            <button type="button" className="btn btn-danger" onClick={handleDelete}>
+              Hapus ujian
+            </button>
           ) : null}
         </div>
       </header>
@@ -627,7 +652,7 @@ function ProctorPanel({
               <option value="">— Pilih proktor —</option>
               {available.map((proctor) => (
                 <option key={proctor.id} value={proctor.id}>
-                  {proctor.full_name} ({proctor.email})
+                  {proctor.full_name} ({proctor.username})
                 </option>
               ))}
             </select>

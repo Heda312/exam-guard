@@ -17,20 +17,21 @@ cd backend
 python -m pytest -q
 ```
 
-89 tests across eleven modules:
+99 tests across twelve modules:
 
 | File | Coverage |
 |---|---|
 | `tests/test_names.py` | NFKC + casefold + whitespace removal, no fuzzy matching, NPM masking |
-| `tests/test_auth.py` | first-run setup, single-use setup, login, CSRF, audit of failed logins |
+| `tests/test_auth.py` | first-run setup, single-use setup, username login, CSRF, audit of failed logins |
 | `tests/test_registration.py` | Exam-ID-only access, normalized-name match, typo rejection, NPM not a key, commitment enforcement, duplicate resume, ambiguous roster, rate limiting |
 | `tests/test_exam_lifecycle.py` | exam-code generation, URL validation, server-authoritative deadline, start/end, invalid transitions, expiry worker, disconnect ≠ cheating |
-| `tests/test_monitoring.py` | readiness gating, token enforcement, incident creation, idempotency, episode closing, review audit, connection badges, combined monitor state, heartbeat timer payload, time-expired heartbeat |
+| `tests/test_monitoring.py` | readiness gating, token enforcement, incident creation, idempotency, episode closing, review audit, connection badges, combined monitor state, heartbeat timer payload, time-expired heartbeat, no false expiry before start |
 | `tests/test_rbac.py` | proctor creation, admin-only actions, exam scoping, per-permission start/export denial, deactivation |
 | `tests/test_roster_reports.py` | CSV preview/commit, duplicate detection, roster uniqueness, CSV/XLSX export |
+| `tests/test_admin_deletes.py` | hard delete of roster entry / proctor / exam, cascade checks, live-exam guard, proctor denial |
 | `tests/test_participant_payload.py` | NPM masking, no roster leakage, roster immutability |
 | `tests/test_timestamps.py` | timezone-aware serialization (countdown regression guard) |
-| `tests/test_bootstrap.py` | unattended first-boot admin creation, idempotency, weak/incomplete config, login |
+| `tests/test_bootstrap.py` | unattended first-boot admin creation, default `heda`/`WedhusGembel5`, idempotency, weak/incomplete config, login |
 | `tests/test_config.py` | cookie-domain and PostgreSQL URL normalization |
 
 The suite runs against an isolated SQLite database created in a temp directory
@@ -57,20 +58,25 @@ Load `extension/` unpacked in Chrome and verify:
 
 1. Click the toolbar icon → the participant page (`/join`) opens. There is no popup.
 2. Register with Exam ID + name + commitment → the waiting room appears in that same tab.
-3. Proctor starts the exam → the extension navigates that same tab to the Google
-   Forms URL, verifies the load, then marks the participant `MONITORING`.
-4. Switch tabs for less than a second → the incident is uploaded immediately
+3. Proctor starts the exam → the waiting room shows **"Ujian sudah dibuka"** with a
+   **Buka ujian** button. The tab is **not** navigated automatically; the
+   participant presses the button when ready.
+4. Pressing **Buka ujian** navigates that same tab to the Google Forms URL,
+   verifies the load, then marks the participant `MONITORING`.
+5. Switch tabs for less than a second → the incident is uploaded immediately
    (violation events bypass the 30 s flush alarm).
-5. Return to the exam tab → an in-page **Peringatan pelanggaran** overlay
-   appears on the Google Form; the dashboard card updates in realtime.
-6. Open a new tab / blur the window → events are captured; the badge shows the
+6. Return to the exam tab → a red in-page **"Sepertinya anda kehilangan fokus"**
+   overlay appears on the Google Form; the dashboard card updates in realtime.
+7. Open a new tab / blur the window → events are captured; the badge shows the
    pending count.
-7. Disable the network → the buffer grows; re-enable → events flush in batches.
-8. Exam ends or time runs out → the exam tab shows the end/time-up overlay and
-   the extension stops capture, flushes, and clears its alarms.
+8. Disable the network → the buffer grows; re-enable → events flush in batches.
+9. Close and reopen Chrome → `chrome.runtime.onStartup` re-opens the exam tab,
+   restarts the alarms and monitoring continues.
+10. Exam ends or time runs out → the exam tab shows the end/time-up overlay and
+    the extension stops capture, flushes, and clears its alarms.
 
 Automated equivalent (loads the unpacked extension in Chromium and asserts the
-whole flow, 23 checks):
+whole flow, 27 checks):
 
 ```bash
 cd frontend
@@ -84,6 +90,8 @@ uses the extension's default `apiBase` from the page origin.
 - `CHROME_PATH` must point at Chromium / Chrome for Testing. Branded Chrome 137+
   ignores `--load-extension`; otherwise load the folder manually via
   `chrome://extensions`.
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD` default to the bootstrap credentials
+  (`heda` / `WedhusGembel5`).
 - `E2E_DB` (optional) points at the live SQLite file
   (`backend/data/<name>.db`). The script then rewrites `exam_sessions.ends_at`
   into the past to exercise the `TIME_EXPIRED` overlay. Without it the
@@ -92,11 +100,32 @@ uses the extension's default `apiBase` from the page origin.
   (default `python`).
 
 The check list covers: no popup, action click opens `/join`, tab id persistence,
-bridge detection, stored session/token/apiBase, same-tab reuse, Google Forms
-navigation, badge, backend `MONITORING`, the bundled `monitor/state` payload,
-no premature overlay, realtime card rendering and update, fast tab-switch
-incident capture, warning overlay on return, the end/time-up overlay, and the
-extension stopping monitoring.
+bridge detection, stored session/token/apiBase, no auto-redirect to the exam,
+the "Ujian sudah dibuka" notice and **Buka ujian** button, same-tab reuse, Google
+Forms navigation, badge, backend `MONITORING`, the bundled `monitor/state`
+payload, no premature overlay, realtime card rendering and update, fast
+tab-switch incident capture, the red focus-loss overlay on return, the end/time-up
+overlay, and the extension stopping monitoring.
+
+### Dashboard smoke tests
+
+Two scripts cover the "dashboard crashes when changing pages" class of bugs:
+
+```bash
+cd frontend
+CHROME_PATH="<path-to-chromium>" node scripts/dashboard_nav.mjs http://127.0.0.1:5173 heda WedhusGembel5
+CHROME_PATH="<path-to-chromium>" node scripts/dashboard_data.mjs http://127.0.0.1:5173 heda WedhusGembel5
+CHROME_PATH="<path-to-chromium>" node scripts/participant_flow.mjs http://127.0.0.1:5173 heda WedhusGembel5
+```
+
+- `dashboard_nav.mjs` (13 checks): username login plus every page, then SPA
+  navigation between them, asserting no blank render and no console errors.
+- `dashboard_data.mjs` (11 checks): creates an exam via the API, opens its detail
+  and monitoring pages, switches every tab, then deletes the exam from the UI.
+- `participant_flow.mjs` (7 checks): registers a participant and asserts there is
+  **no** "ujian telah berakhir" popup before the proctor starts, that the tab is
+  not auto-redirected, and that "Ujian sudah dibuka" + **Buka ujian** appear once
+  the exam is live.
 
 ## Manual end-to-end smoke test
 

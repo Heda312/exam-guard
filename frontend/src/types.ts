@@ -2,7 +2,8 @@ export type Role = "ADMIN" | "PROCTOR";
 
 export interface User {
   id: string;
-  email: string;
+  username: string;
+  email: string | null;
   full_name: string;
   role: Role;
   is_active: boolean;
@@ -110,7 +111,8 @@ export interface RosterImportPreview {
 
 export interface Proctor {
   id: string;
-  email: string;
+  username: string;
+  email: string | null;
   full_name: string;
   role: Role;
   is_active: boolean;

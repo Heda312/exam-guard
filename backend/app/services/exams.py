@@ -226,3 +226,16 @@ def time_remaining_seconds(session: ExamSession, now: Optional[datetime] = None)
     now = now or utcnow()
     ends_at = ensure_utc(session.ends_at)
     return max(0, int((ends_at - now).total_seconds()))
+
+
+def exam_session_expired(session: Optional[ExamSession], now: Optional[datetime] = None) -> bool:
+    """True only when the session has a deadline that has already passed.
+
+    A session that has not started yet has ``ends_at is None``; that is *not*
+    an expiry. Treating it as one was showing participants "ujian telah
+    berakhir" right after registration, before the proctor started the exam.
+    """
+    if session is None or session.ends_at is None:
+        return False
+    now = now or utcnow()
+    return ensure_utc(session.ends_at) <= now

@@ -254,3 +254,43 @@ def test_heartbeat_reports_time_expired(admin_client: TestClient, db) -> None:
     body = response.json()
     assert body["status"] == "TIME_EXPIRED"
     assert body["remaining_seconds"] == 0
+
+
+def test_heartbeat_is_not_expired_before_exam_start(admin_client: TestClient) -> None:
+    """Regression: a registered participant must not be told the exam ended.
+
+    Before the exam starts there is no ExamSession at all, so there is no
+    deadline. ``remaining_seconds`` is 0 either way, which previously made the
+    participant page open the "waktu ujian habis" modal right after sign-up.
+    """
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    status, body, token = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+
+    response = admin_client.post(
+        "/api/v1/participant/heartbeat",
+        json={"participant_session_id": body["participant_session_id"]},
+        headers={"X-Participant-Token": token},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] not in {"TIME_EXPIRED", "COMPLETED"}
+    assert payload["ends_at"] is None
+    assert payload["remaining_seconds"] == 0
+
+
+def test_participant_session_has_no_end_message_before_start(admin_client: TestClient) -> None:
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    status, body, token = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+
+    response = admin_client.get(
+        f"/api/v1/participant/session/{body['participant_session_id']}",
+        headers={"X-Participant-Token": token},
+    )
+    assert response.status_code == 200, response.text
+    session = response.json()
+    assert session["ends_at"] is None
+    assert "Waktu ujian telah berakhir." not in session["messages"]

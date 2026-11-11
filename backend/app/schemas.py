@@ -19,19 +19,20 @@ class SetupStatus(BaseModel):
 
 class FirstRunSetupRequest(BaseModel):
     setup_secret: str = Field(min_length=1)
-    email: EmailStr
+    username: str = Field(min_length=3, max_length=64)
     full_name: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=8, max_length=200)
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=1, max_length=200)
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=8, max_length=200)
 
 
 class UserOut(ORMModel):
     id: str
-    email: str
+    username: str
+    email: Optional[str] = None
     full_name: str
     role: str
     is_active: bool
@@ -119,7 +120,7 @@ class ProctorPermissions(BaseModel):
 
 
 class ProctorCreate(BaseModel):
-    email: EmailStr
+    username: str = Field(min_length=3, max_length=64)
     full_name: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=8, max_length=200)
     permissions: ProctorPermissions = Field(default_factory=ProctorPermissions)
@@ -127,13 +128,28 @@ class ProctorCreate(BaseModel):
 
 class ProctorUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(default=None, min_length=3, max_length=64)
     is_active: Optional[bool] = None
     password: Optional[str] = Field(default=None, min_length=8, max_length=200)
 
 
+class AdminUserIn(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    full_name: str = Field(min_length=2, max_length=255)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class AdminUserOut(UserOut):
+    pass
+
+
 class ProctorOut(UserOut):
     assigned_exam_count: int = 0
+
+
+class UserList(BaseModel):
+    users: list[AdminUserOut]
+    proctors: list[ProctorOut] = []
 
 
 class ProctorAssignment(BaseModel):

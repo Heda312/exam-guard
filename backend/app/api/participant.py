@@ -29,7 +29,7 @@ from ..schemas import (
     ReconnectRequest,
 )
 from ..security import constant_time_equals, hash_token, new_opaque_token
-from ..services.exams import ensure_utc, registration_window_state, time_remaining_seconds
+from ..services.exams import ensure_utc, exam_session_expired, registration_window_state, time_remaining_seconds
 from ..services.identity import IdentityError, google_auth_required, verify_google_id_token
 from ..services.monitoring import record_event
 from ..services.participants import (
@@ -88,7 +88,7 @@ def _session_out(db: Session, ps: ParticipantSession) -> ParticipantSessionOut:
     messages: list[str] = []
     if ps.status == "CONNECTION_LOST":
         messages.append("Koneksi terputus. Waktu ujian tetap berjalan.")
-    if exam_session is not None and exam_session.ends_at is not None and time_remaining_seconds(exam_session) == 0:
+    if exam_session is not None and exam_session_expired(exam_session):
         messages.append("Waktu ujian telah berakhir.")
     payload["messages"] = messages
     return ParticipantSessionOut(**payload)
@@ -222,12 +222,9 @@ async def heartbeat(payload: ReconnectRequest, db: Db, token: ParticipantToken =
 
     exam_session = db.get(ExamSession, ps.exam_session_id)
     remaining = time_remaining_seconds(exam_session) if exam_session else 0
+    expired = exam_session_expired(exam_session)
     effective_status = ps.status
-    if (
-        exam_session is not None
-        and remaining == 0
-        and ps.status not in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}
-    ):
+    if expired and ps.status not in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}:
         effective_status = "TIME_EXPIRED"
         await manager.send_to_participant(
             ps.id,

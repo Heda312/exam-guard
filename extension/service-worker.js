@@ -534,12 +534,13 @@ const OVERLAY_LABELS = {
 
 function overlayContent(kind, warning) {
   if (kind === "warning") {
-    const label = OVERLAY_LABELS[warning?.incidentType] ?? "Aktivitas tidak diizinkan";
     return {
-      tone: "#c58a35",
-      title: "Peringatan pelanggaran",
-      message: `${label} terdeteksi. Aktivitas ini tercatat dan dilaporkan kepada pengawas.`,
-      note: "Kembali ke formulir ujian dan jangan berpindah tab atau jendela sampai ujian selesai.",
+      tone: "#c0362c",
+      danger: true,
+      icon: "!",
+      title: "Sepertinya anda kehilangan fokus",
+      message: "Harap kembali mengerjakan ujian.",
+      note: "Aktivitas ini tercatat dan dilaporkan kepada pengawas.",
       button: "Saya mengerti",
       autoDismissMs: WARNING_AUTO_DISMISS_MS,
     };
@@ -547,6 +548,8 @@ function overlayContent(kind, warning) {
   if (kind === "time_up") {
     return {
       tone: "#b54745",
+      danger: true,
+      icon: "■",
       title: "Waktu ujian telah habis",
       message: "Waktu pengerjaan telah habis. Pemantauan aktivitas browser dihentikan.",
       note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
@@ -556,6 +559,8 @@ function overlayContent(kind, warning) {
   }
   return {
     tone: "#b54745",
+    danger: true,
+    icon: "■",
     title: "Ujian telah berakhir",
     message: "Ujian telah diakhiri oleh pengawas. Pemantauan aktivitas browser dihentikan.",
     note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
@@ -587,35 +592,80 @@ function renderOverlay(payload) {
     "width:100%",
     "box-sizing:border-box",
     "font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif",
-    "background:#fffcf6",
-    "color:#18392c",
+    payload.danger
+      ? "background:linear-gradient(180deg,#fff5f4 0%,#ffe9e6 100%)"
+      : "background:#fffcf6",
+    payload.danger ? "color:#7f1d1d" : "color:#18392c",
     "border-radius:18px",
     "padding:26px",
     "box-shadow:0 20px 48px rgba(24,57,44,0.3)",
+    `border:1px solid ${payload.tone}`,
     `border-top:6px solid ${payload.tone}`,
+  ].join(";");
+
+  const icon = document.createElement("div");
+  icon.textContent = payload.icon ?? "!";
+  icon.setAttribute("aria-hidden", "true");
+  icon.style.cssText = [
+    "width:44px",
+    "height:44px",
+    "border-radius:50%",
+    `background:${payload.tone}`,
+    "color:#fff",
+    "font-size:22px",
+    "font-weight:700",
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "margin:0 0 14px",
   ].join(";");
 
   const title = document.createElement("h2");
   title.textContent = payload.title;
-  title.style.cssText = "font-size:20px;line-height:1.3;margin:0 0 8px;";
+  title.style.cssText = [
+    "font-size:20px",
+    "line-height:1.3",
+    "margin:0 0 8px",
+    payload.danger ? "color:#991b1b" : "color:#18392c",
+  ].join(";");
 
   const message = document.createElement("p");
   message.textContent = payload.message;
-  message.style.cssText = "font-size:14px;line-height:1.55;margin:0 0 10px;color:#2f4038;";
+  message.style.cssText = [
+    "font-size:15px",
+    "line-height:1.55",
+    "margin:0 0 10px",
+    "font-weight:600",
+    payload.danger ? "color:#7f1d1d" : "color:#2f4038",
+  ].join(";");
 
   const note = document.createElement("p");
   note.textContent = payload.note;
-  note.style.cssText = "font-size:12.5px;line-height:1.55;margin:0 0 18px;color:#5f665f;";
+  note.style.cssText = [
+    "font-size:12.5px",
+    "line-height:1.55",
+    "margin:0 0 18px",
+    payload.danger ? "color:#b45309" : "color:#5f665f",
+  ].join(";");
 
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = payload.button;
-  button.style.cssText =
-    "width:100%;padding:11px 16px;border:0;border-radius:12px;background:#18392c;" +
-    "color:#fffcf6;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;";
+  button.style.cssText = [
+    "width:100%",
+    "padding:11px 16px",
+    "border:0",
+    "border-radius:12px",
+    `background:${payload.tone}`,
+    "color:#fff",
+    "font-family:inherit",
+    "font-size:14px",
+    "font-weight:600",
+    "cursor:pointer",
+  ].join(";");
   button.addEventListener("click", () => host.remove());
 
-  panel.append(title, message, note, button);
+  panel.append(icon, title, message, note, button);
   shadow.append(panel);
   document.documentElement.appendChild(host);
 
@@ -805,15 +855,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
   if (alarm.name === WATCH_ALARM) {
-    // Fallback when the waiting-room page is closed or was navigated away:
-    // detect that the exam went live and launch the form automatically.
+    // Fallback when the waiting-room page is closed or was navigated away.
+    // Deliberately does NOT navigate the tab: the participant must press
+    // "Buka ujian" themselves (requirement: no auto-redirect on exam start).
+    // The alarm only keeps the badge/state fresh and re-opens the waiting room.
     const session = await readSession();
-    if (!session?.participantSessionId || session.monitoring || session.needsAttention || session.ended) return;
-    if (!session.googleFormsUrl) return;
+    if (!session?.participantSessionId || session.monitoring || session.ended) return;
     const state = await fetchSessionState(session);
     if (!state) return;
-    if (state.exam_status === "LIVE" && ["INITIALIZING", "READY", "REGISTERED", "WAITING"].includes(state.status)) {
-      await launchExamForm();
+    const examOpen =
+      state.exam_status === "LIVE" &&
+      ["INITIALIZING", "READY", "REGISTERED", "WAITING"].includes(state.status);
+    await patchSession({ examOpen: Boolean(examOpen), lastKnownStatus: state.status });
+    await updateBadge();
+    // If the exam tab was lost (browser restart), bring the participant back to
+    // a page where the "Buka ujian" button is available.
+    const tabAlive = session.examTabId ? await tabExists(session.examTabId) : false;
+    if (!tabAlive && examOpen) {
+      await openParticipantPage();
     }
   }
 });
@@ -940,17 +999,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /* ------------------------------- Lifecycle -------------------------------- */
+
+/** Re-open the exam tab after Chrome was closed and started again.
+ *
+ *  Closing the browser destroys the exam tab, so `examTabId` points at a dead
+ *  tab id and nothing can be captured any more. On startup we re-open the form
+ *  (when monitoring was active) or the participant page, then restart the
+ *  alarms so the participant shows up on the proctor dashboard again.
+ */
+async function recoverAfterBrowserRestart() {
+  const session = await readSession();
+  if (!session?.participantSessionId) {
+    await updateBadge();
+    return;
+  }
+
+  const tabAlive =
+    session.examTabId !== null &&
+    session.examTabId !== undefined &&
+    (await tabExists(session.examTabId));
+
+  if (session.monitoring) {
+    if (tabAlive) {
+      // Same browser session: just make sure the alarms are running again.
+      await startCapture();
+      await updateBadge();
+      return;
+    }
+
+    const url = session.googleFormsUrl;
+    if (url) {
+      const tab = await chrome.tabs.create({ url, active: true });
+      await patchSession({ examTabId: tab.id ?? null, pendingWarning: null });
+      await startCapture();
+      await queueEvent(
+        "FOCUS_RESTORED",
+        {
+          tabId: tab.id,
+          url,
+          metadata: { reason: "browser_restarted" },
+        },
+        { priority: true },
+      );
+      await flushEvents();
+      await updateBadge();
+      return;
+    }
+  }
+
+  // Not monitoring (or no form URL): send the participant back to the page
+  // where they can press "Buka ujian" again.
+  if (!tabAlive) {
+    await openParticipantPage();
+  }
+  await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
+  await updateBadge();
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   await updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  const session = await readSession();
-  if (session?.monitoring) {
-    await chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 0.5 });
-    await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
-  } else if (session?.participantSessionId) {
-    await chrome.alarms.create(WATCH_ALARM, { periodInMinutes: 0.5 });
+  try {
+    await recoverAfterBrowserRestart();
+  } catch {
+    await updateBadge();
   }
-  await updateBadge();
 });

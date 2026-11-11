@@ -19,6 +19,10 @@ import path from "node:path";
 const BASE = process.argv[2] ?? "http://127.0.0.1:5199";
 const ORIGIN = new URL(BASE).origin;
 const EXT_DIR = path.resolve("..", "extension");
+// Admin credentials for the local stack. The bootstrap defaults are
+// `heda` / `WedhusGembel5`; override with env vars for a custom deployment.
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? "heda";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "WedhusGembel5";
 const CHROME =
   process.env.CHROME_PATH ??
   "C:/Users/abisu/AppData/Local/ms-playwright/chromium-1248/chrome-win64/chrome.exe";
@@ -123,9 +127,9 @@ if (status.setup_required) {
   await adminPage.goto(`${BASE}/setup`, { waitUntil: "networkidle2" });
   await adminPage.type("#setup_secret", "dev-setup-secret");
   await adminPage.type("#full_name", "Admin Ext");
-  await adminPage.type("#email", "admin@example.com");
-  await adminPage.type("#password", "AdminRahasia123");
-  await adminPage.type("#confirm", "AdminRahasia123");
+  await adminPage.type("#username", ADMIN_USERNAME);
+  await adminPage.type("#password", ADMIN_PASSWORD);
+  await adminPage.type("#confirm", ADMIN_PASSWORD);
   await adminPage.click('button[type="submit"]');
   await adminPage.waitForFunction(() => location.pathname.includes("/login"), { timeout: 15000 });
   // Setup already authenticated the admin: clear cookies so the login form shows.
@@ -134,11 +138,11 @@ if (status.setup_required) {
 }
 
 await adminPage.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
-await adminPage.waitForSelector("#email", { timeout: 20000 });
-await adminPage.type("#email", "admin@example.com");
-await adminPage.type("#password", "AdminRahasia123");
+await adminPage.waitForSelector("#username", { timeout: 20000 });
+await adminPage.type("#username", ADMIN_USERNAME);
+await adminPage.type("#password", ADMIN_PASSWORD);
 await adminPage.click('button[type="submit"]');
-await adminPage.waitForFunction(() => !location.pathname.includes("/login"), { timeout: 15000 });
+await adminPage.waitForFunction(() => !location.pathname.includes("/login"), { timeout: 20000 });
 
 const exam = await adminPage.evaluate(async () => {
   const csrf = decodeURIComponent(document.cookie.match(/eg_csrf=([^;]*)/)?.[1] ?? "");
@@ -260,7 +264,40 @@ await adminPage.evaluate(async (examId) => {
   });
 }, exam.id);
 
-// The waiting room polls every 5s and posts exam_started to the extension.
+// The waiting room polls every 5s. It must NOT navigate the tab by itself:
+// the participant presses "Buka ujian" explicitly.
+await new Promise((resolve) => setTimeout(resolve, 12000));
+
+const waitingState = await participantPage.evaluate(() => ({
+  path: window.location.pathname,
+  text: document.body.innerText,
+  buttons: [...document.querySelectorAll("button")].map((button) => button.textContent?.trim()),
+}));
+check(
+  "waiting room does not auto-redirect to the exam",
+  waitingState.path.includes("/join"),
+  waitingState.path,
+);
+check(
+  "waiting room shows the exam is open",
+  waitingState.text.includes("Ujian sudah dibuka"),
+  waitingState.text.slice(0, 70).replace(/\n/g, " "),
+);
+check(
+  "waiting room offers a 'Buka ujian' button",
+  waitingState.buttons.includes("Buka ujian"),
+  waitingState.buttons.join(" | ").slice(0, 120),
+);
+
+// Press it: this is what the participant does when they are ready.
+const clickStart = await participantPage.evaluate(() => {
+  const button = [...document.querySelectorAll("button")].find(
+    (element) => element.textContent?.trim() === "Buka ujian",
+  );
+  if (button) button.click();
+  return Boolean(button);
+});
+check("'Buka ujian' is clickable", clickStart);
 await new Promise((resolve) => setTimeout(resolve, 12000));
 
 const sessionAfterStart = await worker.evaluate(async () => {
@@ -344,7 +381,7 @@ const overlayAfter = await participantPage.evaluate(() => {
 });
 check(
   "warning overlay appears when returning to the exam tab",
-  Boolean(overlayAfter && overlayAfter.includes("Peringatan pelanggaran")),
+  Boolean(overlayAfter && overlayAfter.includes("Sepertinya anda kehilangan fokus")),
   overlayAfter?.slice(0, 90) ?? "none",
 );
 

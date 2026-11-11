@@ -695,4 +695,32 @@ def export_report_xlsx(
     )
 
 
+@router.delete("/exams/{exam_id}", response_model=MessageResponse)
+def delete_exam(
+    exam_id: str,
+    admin: AdminUser,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> MessageResponse:
+    """Delete an exam and everything attached to it (admin only)."""
+    exam = get_exam_or_404(db, exam_id)
+    if exam.status not in {"DRAFT", "SCHEDULED", "REGISTRATION_OPEN", "WAITING", "COMPLETED", "CANCELLED"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ujian yang sedang LIVE tidak dapat dihapus. Akhiri ujian terlebih dahulu.",
+        )
+    record_audit(
+        db,
+        action="exam.deleted",
+        actor=admin,
+        resource_type="exam",
+        resource_id=exam.id,
+        metadata={"exam_code": exam.exam_code, "name": exam.name, "status": exam.status},
+        ip_address=client_ip(request),
+    )
+    db.delete(exam)
+    db.commit()
+    return MessageResponse(message="Ujian dihapus.")
+
+
 __all__ = ["router", "EXAM_TRANSITIONS"]

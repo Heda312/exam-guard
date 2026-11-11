@@ -50,7 +50,7 @@ PY
 ## 3. Re-create the initial administrator from `.env`
 
 The Docker entrypoint creates the first admin automatically from
-`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`. That step is a no-op once
+`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`. That step is a no-op once
 any administrator exists, so use one of these when you need to seed one again:
 
 ```bash
@@ -61,7 +61,7 @@ docker compose logs api | grep -i bootstrap
 
 ```bash
 # Option B: force a reset of the existing admin password (see section 1),
-# or temporarily promote the account whose email is in BOOTSTRAP_ADMIN_EMAIL.
+# or temporarily promote the account whose username is in BOOTSTRAP_ADMIN_USERNAME.
 # Remove the guard by demoting the current admins first:
 docker compose exec api python - <<'PY'
 from sqlalchemy import select

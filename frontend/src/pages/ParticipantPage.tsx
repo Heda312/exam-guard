@@ -6,16 +6,6 @@ import { Alert, formatDuration, formatTime } from "../ui";
 
 type Phase = "form" | "waiting" | "exam" | "finished";
 
-const VIOLATION_LABELS: Record<string, string> = {
-  TAB_SWITCH: "Berpindah tab",
-  NEW_TAB: "Membuka tab baru",
-  TAB_CLOSED: "Menutup tab ujian",
-  FOCUS_LOST: "Kehilangan fokus jendela ujian",
-  WINDOW_MINIMIZED: "Meminimalkan jendela ujian",
-  NAVIGATION: "Meninggalkan halaman ujian",
-  CONNECTION_LOST: "Koneksi terputus",
-};
-
 /** Bridge to the ExamGuard Chrome extension (postMessage protocol). */
 function notifyExtension(type: string, payload: Record<string, unknown> = {}) {
   window.postMessage({ source: "examguard-web", type, payload }, window.location.origin);
@@ -51,6 +41,13 @@ export default function ParticipantPage() {
     () => ["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session?.status ?? ""),
     [session?.status],
   );
+
+  /** The proctor has started the exam; the participant now chooses when to open it. */
+  const examOpened = useMemo(() => {
+    if (!session) return false;
+    if (session.exam_status === "LIVE") return true;
+    return ["INITIALIZING", "READY", "MONITORING"].includes(session.status);
+  }, [session]);
 
   /* ---------------------------- Bootstrap ---------------------------- */
   useEffect(() => {
@@ -255,8 +252,13 @@ export default function ParticipantPage() {
 
         if (frame.event === "connected") {
           const status = typeof data.status === "string" ? data.status : "";
+          const endsAt = typeof data.ends_at === "string" ? data.ends_at : null;
           const seconds = Number(data.remaining_seconds ?? 0);
-          if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(status) || seconds === 0) {
+          // Only a real deadline in the past means "time up". A session that has
+          // not started yet reports remaining_seconds = 0 with ends_at = null;
+          // that is the waiting room, not the end of the exam.
+          const expired = endsAt !== null && seconds <= 0 && new Date(endsAt).getTime() <= Date.now();
+          if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(status) || expired) {
             setEndReason(status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
             setEndModal(true);
             void refreshRef.current();
@@ -307,14 +309,9 @@ export default function ParticipantPage() {
       const updated = await participantApi.session(session.participant_session_id);
       setSession(updated);
       setPhase(resolvePhase(updated));
-      // When the exam goes live, let the extension navigate the exam tab to the
-      // Google Forms URL and start monitoring (spec §10.1 steps 15-18, §10.3).
-      if (updated.exam_status === "LIVE" && ["INITIALIZING", "READY"].includes(updated.status)) {
-        notifyExtension("exam_started", {
-          participantSessionId: updated.participant_session_id,
-          googleFormsUrl: updated.google_forms_url,
-        });
-      }
+      // Deliberately no automatic navigation: the participant must press
+      // "Buka ujian" themselves. Auto-redirecting on exam start surprised
+      // participants and could fire while they were still reading the page.
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -338,7 +335,9 @@ export default function ParticipantPage() {
   });
 
   useEffect(() => {
-    if (remaining !== 0 || !session || isFinished) return;
+    // `remaining` starts as null and is only 0 when a real deadline exists and
+    // has passed; guard on ends_at so the waiting room never trips this.
+    if (remaining !== 0 || !session?.ends_at || !session || isFinished) return;
     setEndReason("TIME_EXPIRED");
     setEndModal(true);
     notifyExtension("exam_ended", { participantSessionId: session.participant_session_id });
@@ -497,29 +496,70 @@ export default function ParticipantPage() {
                 </div>
               </div>
 
-              <div className="card" style={{ background: "rgba(220,231,217,0.35)" }}>
-                <h2 style={{ fontSize: 17, marginBottom: 8 }}>Ruang tunggu</h2>
-                <p className="small muted">
-                  Ujian belum dimulai oleh pengawas. Tetap di halaman ini; timer akan berjalan
-                  otomatis ketika ujian dimulai.
-                </p>
-                <div className="row mt-16">
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={refreshSession}>
-                    Perbarui status
-                  </button>
-                  <span className="small muted">
-                    Status sesi: <strong>{session.status}</strong>
-                  </span>
+              {examOpened ? (
+                <div className="card" style={{ background: "rgba(220,231,217,0.45)" }}>
+                  <h2 style={{ fontSize: 18, marginBottom: 8 }}>Ujian sudah dibuka</h2>
+                  <p className="small muted" style={{ marginBottom: 12 }}>
+                    Pengawas telah memulai ujian. Waktu ujian <strong>belum berjalan</strong> untuk
+                    Anda sampai Anda menekan tombol di bawah. Tekan tombol itu ketika Anda siap
+                    mengerjakan.
+                  </p>
+                  <div className="row">
+                    {session.google_forms_url ? (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => {
+                          // The extension owns the exam tab, so it performs the navigation.
+                          notifyExtension("exam_started", {
+                            participantSessionId: session.participant_session_id,
+                            googleFormsUrl: session.google_forms_url,
+                          });
+                        }}
+                      >
+                        Buka ujian
+                      </button>
+                    ) : (
+                      <span className="small muted">
+                        Pengawas belum mengisi tautan formulir ujian. Hubungi pengawas.
+                      </span>
+                    )}
+                    <button type="button" className="btn btn-ghost" onClick={refreshSession}>
+                      Perbarui status
+                    </button>
+                  </div>
+                  {!extensionDetected ? (
+                    <div className="small mt-16" style={{ color: "var(--warning-500)" }}>
+                      Extension ExamGuard belum terdeteksi. Pasang extension agar formulir dapat
+                      dibuka dan aktivitas browser terpantau.
+                    </div>
+                  ) : null}
                 </div>
-                <div className="row mt-16" style={{ gap: 8 }}>
-                  <span className={`badge ${extensionDetected ? "badge-success" : "badge-warning"}`}>
-                    {extensionDetected ? "Extension siap" : "Extension belum terdeteksi"}
-                  </span>
-                  <span className="small muted">
-                    Formulir akan terbuka otomatis di tab ini saat ujian dimulai.
-                  </span>
+              ) : (
+                <div className="card" style={{ background: "rgba(220,231,217,0.35)" }}>
+                  <h2 style={{ fontSize: 17, marginBottom: 8 }}>Ruang tunggu</h2>
+                  <p className="small muted">
+                    Ujian belum dimulai oleh pengawas. Halaman ini akan memperbarui statusnya
+                    sendiri; Anda tidak perlu memuat ulang.
+                  </p>
+                  <div className="row mt-16">
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={refreshSession}>
+                      Perbarui status
+                    </button>
+                    <span className="small muted">
+                      Status sesi: <strong>{session.status}</strong>
+                    </span>
+                  </div>
+                  <div className="row mt-16" style={{ gap: 8 }}>
+                    <span className={`badge ${extensionDetected ? "badge-success" : "badge-warning"}`}>
+                      {extensionDetected ? "Extension siap" : "Extension belum terdeteksi"}
+                    </span>
+                    <span className="small muted">
+                      Setelah ujian dibuka, tombol <strong>Buka ujian</strong> akan muncul di sini.
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="alert alert-info">
                 <div className="small">
@@ -666,23 +706,18 @@ export default function ParticipantPage() {
           aria-modal="true"
           aria-labelledby="violation_title"
         >
-          <div className="modal-panel is-compact">
-            <div className="modal-icon is-warning" aria-hidden="true">
+          <div className="modal-panel is-compact is-danger">
+            <div className="modal-icon is-danger" aria-hidden="true">
               !
             </div>
             <h2 id="violation_title" className="modal-title">
-              Peringatan pelanggaran
+              Sepertinya anda kehilangan fokus
             </h2>
-            <p className="small muted">
-              Sistem mendeteksi{" "}
-              <strong>{VIOLATION_LABELS[warning.type] ?? warning.type}</strong> pada sesi Anda.
-              Aktivitas ini tercatat dan dilaporkan kepada pengawas.
-            </p>
-            <div className="alert alert-warning">
+            <p className="modal-lead">Harap kembali mengerjakan ujian.</p>
+            <div className="alert alert-danger">
               <div className="small">
-                Kembali ke halaman ujian dan jangan berpindah tab, membuka jendela lain, atau
-                meninggalkan formulir sampai ujian selesai. Pelanggaran berulang dapat memengaruhi
-                penilaian integritas.
+                Aktivitas ini tercatat dan dilaporkan kepada pengawas. Jangan berpindah tab,
+                membuka jendela lain, atau meninggalkan formulir sampai ujian selesai.
               </div>
             </div>
             {warning.count > 1 ? (
@@ -692,7 +727,7 @@ export default function ParticipantPage() {
             ) : null}
             <button
               type="button"
-              className="btn btn-primary btn-block"
+              className="btn btn-danger btn-block"
               onClick={() => setWarning(null)}
             >
               Saya mengerti
@@ -775,6 +810,9 @@ function Steps({ phase }: { phase: Phase }) {
 
 function resolvePhase(session: ParticipantSession): Phase {
   if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session.status)) return "finished";
-  if (["REGISTERED", "WAITING"].includes(session.status)) return "waiting";
+  // INITIALIZING/READY means "exam opened, participant has not entered yet".
+  // Keeping them in the waiting view is what shows the explicit "Buka ujian"
+  // button instead of navigating the tab behind their back.
+  if (["REGISTERED", "WAITING", "INITIALIZING", "READY"].includes(session.status)) return "waiting";
   return "exam";
 }
