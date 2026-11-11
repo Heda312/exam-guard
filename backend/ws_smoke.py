@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -19,6 +20,7 @@ import urllib.request
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8123").rstrip("/")
 API = f"{BASE}/api/v1"
 WS_BASE = BASE.replace("http://", "ws://").replace("https://", "wss://")
+SETUP_SECRET = os.environ.get("EXAMGUARD_SETUP_SECRET", "dev-setup-secret")
 
 _cookies: dict[str, str] = {}
 _csrf = ""
@@ -80,7 +82,7 @@ async def main() -> None:
             "POST",
             "/setup",
             {
-                "setup_secret": "e2e-setup",
+                "setup_secret": SETUP_SECRET,
                 "email": "admin@example.com",
                 "full_name": "Admin WS",
                 "password": "AdminRahasia123",

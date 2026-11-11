@@ -119,13 +119,13 @@ Notes:
 
 ## 4. Local server profile (192.168.1.6)
 
+The production compose file with plain-HTTP overrides:
+
 ```env
 APP_ENV=development
 PUBLIC_BASE_URL=http://192.168.1.6:8080
-CORS_ORIGINS=http://192.168.1.6:8080,http://192.168.1.6:5173
+CORS_ORIGINS=http://192.168.1.6:8080
 COOKIE_SECURE=false
-DATABASE_URL=postgresql+psycopg://examguard:<password>@db:5432/examguard
-AUTO_CREATE_TABLES=true
 HTTP_PORT=8080
 ```
 
@@ -135,11 +135,33 @@ docker compose up -d --build
 
 Participants on the same network open `http://192.168.1.6:8080/join`.
 
-> The Chrome extension manifest lists the production origin plus
-> `localhost:8000`/`127.0.0.1:8000`. To test the extension against the LAN host,
-> add `http://192.168.1.6:8080/*` to `host_permissions` and to the
-> `content_scripts.matches` array, and update `API_BASE` in
-> `extension/service-worker.js`.
+> The extension manifest lists the production origin plus the local dev origins
+> (`localhost:5173`/`127.0.0.1:5173`). To use the extension against a LAN host,
+> add `http://192.168.1.6:8080/*` to both `host_permissions` and
+> `content_scripts.matches` in `extension/manifest.json`, then reload the
+> extension.
+
+---
+
+## 4b. Development profile (hot reload)
+
+For day-to-day work use the development compose file — SQLite, `--reload`, and
+Vite hot reload:
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+| Service | URL | Notes |
+|---|---|---|
+| Frontend (Vite) | http://localhost:5173 | proxies `/api` and `/ws` to `api:8000` |
+| API (uvicorn `--reload`) | http://localhost:8000 | `backend/app` mounted for reload |
+
+Setup secret: `dev-setup-secret`. No PostgreSQL container and no migrations are
+needed; tables are created automatically.
+
+The extension attaches to `localhost:5173`, so this profile needs no manifest
+changes.
 
 ---
 

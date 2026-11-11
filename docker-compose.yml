@@ -29,9 +29,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY wajib diisi}
       SETUP_SECRET: ${SETUP_SECRET:?SETUP_SECRET wajib diisi}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://exam.heda.my.id}
-      COOKIE_SECURE: "true"
+      # Set COOKIE_SECURE=false only when serving plain HTTP (local/LAN profile).
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
-      COOKIE_SAMESITE: lax
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://exam.heda.my.id}
       PARTICIPANT_IDENTITY_MODE: ${PARTICIPANT_IDENTITY_MODE:-none}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

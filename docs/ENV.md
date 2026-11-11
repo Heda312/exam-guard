@@ -35,7 +35,7 @@ process environment or a `.env` file. Booleans accept `true`/`false`/`1`/`0`.
 | `CSRF_COOKIE_NAME` | `eg_csrf` | JS-readable CSRF cookie (double submit) |
 | `CSRF_HEADER_NAME` | `X-CSRF-Token` | Header compared against the CSRF cookie |
 | `SESSION_TTL_MINUTES` | `720` | Session lifetime |
-| `COOKIE_SECURE` | `true` | Set `false` only for `http://localhost` |
+| `COOKIE_SECURE` | `true` | Set `false` only for plain HTTP (`http://localhost`, LAN) |
 | `COOKIE_DOMAIN` | *(empty)* | Optional cookie domain |
 | `COOKIE_SAMESITE` | `lax` | `lax` \| `strict` \| `none` |
 
@@ -94,3 +94,10 @@ See `docs/DECISIONS.md` (D-1) for why the default is `none`.
 | `POSTGRES_PASSWORD` | *(required)* | Database password |
 | `HTTP_PORT` | `8080` | Host port mapped to nginx |
 | `CORS_ORIGINS` | `https://exam.heda.my.id` | Public origin(s) |
+| `COOKIE_SECURE` | `true` | Set `false` when serving the stack over plain HTTP |
+
+## Frontend dev server only
+
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_API_TARGET` | `http://127.0.0.1:8000` | Upstream for the Vite `/api` and `/ws` proxy. In `docker-compose.dev.yml` it is set to `http://api:8000` |

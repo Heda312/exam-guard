@@ -24,6 +24,9 @@ backend/data/*
 # Node
 node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.shots/
+.shots-ext/
 frontend/.vite/
 npm-debug.log*
 

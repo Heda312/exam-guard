@@ -1,5 +1,10 @@
 version: "3.9"
 
+# Development stack: hot reload for both API and web, SQLite for the database.
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# For the production-style stack (PostgreSQL + nginx) use docker-compose.yml.
+
 services:
   api:
     build:
@@ -29,7 +34,8 @@ services:
       - ./frontend:/web
       - /web/node_modules
     environment:
-      VITE_API_BASE: http://localhost:8000
+      # The Vite dev server proxies /api and /ws to the API container.
+      VITE_API_TARGET: http://api:8000
     ports:
       - "5173:5173"
     depends_on:

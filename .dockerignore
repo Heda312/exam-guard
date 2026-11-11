@@ -1,0 +1,47 @@
+# Keep the Docker build context small and avoid leaking local state.
+
+# Version control / editors
+.git
+.gitignore
+.vscode
+.idea
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+backend/.venv
+backend/venv
+backend/data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Node
+frontend/node_modules
+frontend/dist
+frontend/.vite
+npm-debug.log*
+
+# Local env / secrets
+.env
+.env.local
+.env.*.local
+
+# Docs and screenshots are not needed to build images
+docs
+*.md
+!README.md
+
+# Test and smoke scripts
+backend/tests
+backend/e2e_smoke.py
+backend/ws_smoke.py
+frontend/scripts
+
+# OS noise
+.DS_Store
+Thumbs.db

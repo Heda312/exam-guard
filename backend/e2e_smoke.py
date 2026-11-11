@@ -6,6 +6,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -13,6 +14,8 @@ import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8123").rstrip("/")
 API = f"{BASE}/api/v1"
+# Matches backend/.env.example; override with EXAMGUARD_SETUP_SECRET when needed.
+SETUP_SECRET = os.environ.get("EXAMGUARD_SETUP_SECRET", "dev-setup-secret")
 
 _cookies: dict[str, str] = {}
 _csrf = ""
@@ -86,7 +89,7 @@ def main() -> None:
             "POST",
             "/setup",
             {
-                "setup_secret": "e2e-setup",
+                "setup_secret": SETUP_SECRET,
                 "email": "admin@example.com",
                 "full_name": "Admin E2E",
                 "password": "AdminRahasia123",
