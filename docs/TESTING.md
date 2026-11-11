@@ -17,7 +17,7 @@ cd backend
 python -m pytest -q
 ```
 
-75 tests across nine modules:
+85 tests across ten modules:
 
 | File | Coverage |
 |---|---|
@@ -30,6 +30,8 @@ python -m pytest -q
 | `tests/test_roster_reports.py` | CSV preview/commit, duplicate detection, roster uniqueness, CSV/XLSX export |
 | `tests/test_participant_payload.py` | NPM masking, no roster leakage, roster immutability |
 | `tests/test_timestamps.py` | timezone-aware serialization (countdown regression guard) |
+| `tests/test_bootstrap.py` | unattended first-boot admin creation, idempotency, weak/incomplete config, login |
+| `tests/test_config.py` | cookie-domain and PostgreSQL URL normalization |
 
 The suite runs against an isolated SQLite database created in a temp directory
 (`tests/conftest.py`), drops all tables between tests, and never touches

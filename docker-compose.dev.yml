@@ -1,20 +1,20 @@
-version: "3.9"
-
-# Development stack: hot reload for both API and web, SQLite for the database.
+# ExamGuard — local development stack (Docker, hot reload, SQLite)
+#
 #   docker compose -f docker-compose.dev.yml up --build
 #
-# For the production-style stack (PostgreSQL + nginx) use docker-compose.yml.
+# Untuk production (PostgreSQL + nginx) gunakan docker-compose.yml.
 
 services:
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    # Install the test/smoke tooling too, so `docker compose -f docker-compose.dev.yml
-    # exec api pytest` works inside the dev container.
+    # Dev container: install test tooling, skip migrations/bootstrap (SQLite
+    # creates tables itself), and run uvicorn with hot reload.
+    entrypoint: ["/bin/sh", "-c"]
     command: >
-      sh -c "pip install --no-cache-dir -r /app/requirements-dev.txt
-      && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      pip install --no-cache-dir -r /app/requirements-dev.txt
+      && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend/app:/app/app
       - ./backend/tests:/app/tests
@@ -26,8 +26,11 @@ services:
       APP_ENV: development
       DATABASE_URL: sqlite:////app/data/examguard.db
       AUTO_CREATE_TABLES: "true"
+      RUN_MIGRATIONS: "false"
+      BOOTSTRAP_ADMIN_ENABLED: "false"
       SECRET_KEY: dev-only-change-me
       SETUP_SECRET: dev-setup-secret
+      SETUP_DISABLED: "false"
       COOKIE_SECURE: "false"
       PARTICIPANT_IDENTITY_MODE: none
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173

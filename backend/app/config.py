@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # Set to true after the first-run setup has been completed (also stored in DB).
     setup_disabled: bool = Field(default=False)
 
+    # --- Unattended bootstrap (production convenience) --------------------
+    # When both are set, the initial administrator is created on first boot and
+    # /setup is disabled automatically — no browser step required.
+    bootstrap_admin_email: str = Field(default="")
+    bootstrap_admin_password: str = Field(default="")
+    bootstrap_admin_name: str = Field(default="Administrator")
+
     # --- Sessions ---------------------------------------------------------
     session_cookie_name: str = "eg_session"
     csrf_cookie_name: str = "eg_csrf"
@@ -91,6 +98,15 @@ class Settings(BaseSettings):
             return value.replace("postgres://", "postgresql+psycopg://", 1)
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+psycopg://", 1)
+        return value
+
+    @field_validator("cookie_domain", mode="before")
+    @classmethod
+    def _blank_cookie_domain_is_none(cls, value: object) -> object:
+        # docker compose passes an empty string when the variable is unset;
+        # an empty Domain attribute would make browsers drop the cookie.
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @property

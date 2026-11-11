@@ -56,7 +56,7 @@ exam-guard/
 │   │   ├── worker.py         expiry + heartbeat sweeper
 │   │   └── main.py           application factory
 │   ├── alembic/              migrations
-│   ├── tests/                pytest suite (75 tests)
+│   ├── tests/                pytest suite (85 tests)
 │   ├── requirements.txt      runtime dependencies
 │   ├── requirements-dev.txt  runtime + pytest/httpx/websockets
 │   ├── e2e_smoke.py          live API smoke test (36 checks)
@@ -130,14 +130,14 @@ Create the environment file:
 
 ```bash
 # Windows
-copy ..\.env.example .env
+copy ..\.env.local.example .env
 # macOS / Linux
-cp ../.env.example .env
+cp ../.env.local.example .env
 ```
 
-The defaults are already correct for local use: SQLite at `./data/examguard.db`,
-`COOKIE_SECURE=false`, `AUTO_CREATE_TABLES=true`, and
-`SETUP_SECRET=dev-setup-secret`.
+The local defaults are ready to use: SQLite at `./data/examguard.db`,
+`COOKIE_SECURE=false`, `AUTO_CREATE_TABLES=true`, bootstrap disabled, and
+`SETUP_SECRET=dev-setup-secret` for the browser setup wizard.
 
 Start the API:
 
@@ -222,78 +222,128 @@ and that is intentional.
 
 ### Production profile (PostgreSQL + nginx)
 
+One file to edit, one command to deploy. Everything else is automatic: the API
+container waits for PostgreSQL, applies migrations, creates the initial
+administrator, then starts.
+
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` — these four values are **required**:
+Fill in these five values in `.env`:
 
 ```env
 POSTGRES_PASSWORD=<strong-random-password>
 SECRET_KEY=<openssl rand -hex 32>
-SETUP_SECRET=<openssl rand -hex 24>
 PUBLIC_BASE_URL=https://exam.heda.my.id
-CORS_ORIGINS=https://exam.heda.my.id
-COOKIE_SECURE=true
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=<strong-password, min 10 chars with letters+digits>
 ```
 
 Generate secrets:
 
 ```bash
 openssl rand -hex 32     # SECRET_KEY
-openssl rand -hex 24     # SETUP_SECRET
 ```
 
-Start and migrate:
+Then:
 
 ```bash
 docker compose up -d --build
-docker compose exec api alembic upgrade head
 ```
 
-| Service | URL |
+That is the entire deployment. On first boot the API logs:
+
+```
+[entrypoint] Menunggu database siap…
+[entrypoint] Menerapkan migrasi (alembic upgrade head)…
+[entrypoint] Memeriksa akun administrator awal…
+examguard.bootstrap: Admin awal dibuat: admin@example.com
+[entrypoint] Menjalankan API pada port 8000…
+```
+
+Log in immediately at `https://<your-domain>` with
+`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`. The admin is flagged
+`must_change_password`, so you are asked to set a new password on first login.
+
+| Service | Where |
 |---|---|
-| Web (nginx: SPA + `/api` proxy + `/ws`) | http://localhost:8080 |
-| API (internal only) | `api:8000` inside the Compose network |
-| PostgreSQL | `db:5432` inside the Compose network |
+| Web (nginx: SPA + `/api` proxy + `/ws`) | host port **9200** → `http://127.0.0.1:9200` |
+| API | internal only, `api:8000` on the Compose network |
+| PostgreSQL | internal only, `db:5432` on the Compose network |
 
 Verify:
 
 ```bash
-curl -fsS http://localhost:8080/healthz     # nginx
-curl -fsS http://localhost:8080/health      # API through the proxy
+curl -fsS http://127.0.0.1:9200/healthz     # nginx
+curl -fsS http://127.0.0.1:9200/health      # API through the proxy
 docker compose ps
 docker compose logs -f api
 ```
 
-Then open `http://localhost:8080/setup` once and create the admin with
-`SETUP_SECRET`.
+#### Changing the host port
 
-After setup, harden and restart:
+`WEB_PORT` in `.env` is the only host port that is published:
 
 ```env
-SETUP_SECRET=
-SETUP_DISABLED=true
+WEB_PORT=9200      # default
+API_PORT=8000      # in-container only, usually leave as is
+```
+
+The nginx config is rendered from a template at container start, so changing
+`API_PORT` needs only a restart, not a rebuild.
+
+#### After the first login
+
+Optionally blank the bootstrap password so a leaked `.env` cannot re-seed an
+account (it is already a no-op once an admin exists, but this removes the value
+from disk):
+
+```env
+BOOTSTRAP_ADMIN_PASSWORD=
+```
+
+`SETUP_DISABLED=true` (the default) keeps `/setup` permanently closed.
+
+### Cloudflare Tunnel
+
+Point the tunnel at the published host port — no TLS setup, no certificate
+mounts, no `COOKIE_SECURE` changes:
+
+```yaml
+# /etc/cloudflared/config.yml
+tunnel: examguard
+credentials-file: /root/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: exam.heda.my.id
+    service: http://127.0.0.1:9200
+    originRequest:
+      connectTimeout: 30s
+      noTLSVerify: true
+  - service: http_status:404
 ```
 
 ```bash
-docker compose up -d
+cloudflared tunnel run examguard
 ```
+
+Keep `PUBLIC_BASE_URL=https://exam.heda.my.id` and `COOKIE_SECURE=true` — TLS
+terminates at Cloudflare, and nginx forwards `X-Forwarded-Proto` to the API.
 
 ### Serving the Docker stack over plain HTTP (LAN)
 
-The production profile defaults to `COOKIE_SECURE=true`, which requires HTTPS.
-For a LAN deployment such as `http://192.168.1.6:8080`:
+`COOKIE_SECURE=true` requires HTTPS. For a LAN deployment such as
+`http://192.168.1.6:9200`:
 
 ```env
-PUBLIC_BASE_URL=http://192.168.1.6:8080
-CORS_ORIGINS=http://192.168.1.6:8080
+PUBLIC_BASE_URL=http://192.168.1.6:9200
+CORS_ORIGINS=http://192.168.1.6:9200
 COOKIE_SECURE=false
-HTTP_PORT=8080
+WEB_PORT=9200
 ```
 
 > The extension only attaches to origins listed in its manifest. For a LAN host,
-> add `http://192.168.1.6:8080/*` to both `host_permissions` and
+> add `http://192.168.1.6:9200/*` to both `host_permissions` and
 > `content_scripts.matches` in `extension/manifest.json`, then reload the
 > extension. The development profile on port 5173 needs no changes.
 
@@ -305,7 +355,7 @@ tunnel: examguard
 credentials-file: /root/.cloudflared/<tunnel-id>.json
 ingress:
   - hostname: exam.heda.my.id
-    service: http://127.0.0.1:8080
+    service: http://127.0.0.1:9200
     originRequest:
       connectTimeout: 30s
       noTLSVerify: true
@@ -395,12 +445,16 @@ often need changing:
 
 | Variable | Default | Notes |
 |---|---|---|
+| `WEB_PORT` | `9200` | Host port published by nginx; point Cloudflare Tunnel here |
 | `DATABASE_URL` | `sqlite:///./data/examguard.db` | Use `postgresql+psycopg://…` for PostgreSQL |
-| `AUTO_CREATE_TABLES` | `true` | Set `false` in production and run `alembic upgrade head` |
+| `AUTO_CREATE_TABLES` | `true` | `false` in production; the container runs `alembic upgrade head` |
 | `SECRET_KEY` | `change-me-in-production` | **Must** be replaced in production |
-| `SETUP_SECRET` | *(empty)* | Required by `/setup`; empty disables the page |
+| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | With the password set, creates the first admin on boot |
+| `BOOTSTRAP_ADMIN_PASSWORD` | *(empty)* | Min 10 chars, letters + digits; admin must change it on first login |
+| `SETUP_SECRET` | *(empty)* | Only for the browser wizard; not needed in production |
+| `SETUP_DISABLED` | `false` | `true` closes `/setup` permanently |
 | `COOKIE_SECURE` | `true` | `false` only for plain HTTP |
-| `CORS_ORIGINS` | localhost + prod origin | Comma-separated |
+| `CORS_ORIGINS` | localhost + prod origin | Comma-separated; defaults to `PUBLIC_BASE_URL` in Docker |
 | `PARTICIPANT_IDENTITY_MODE` | `none` | `google` additionally requires a verified Google ID token |
 | `ALLOWED_EXAM_URL_HOSTS` | `docs.google.com,forms.gle,forms.google.com` | Allow-list for exam form URLs |
 
@@ -420,7 +474,7 @@ cd backend
 pip install -r requirements-dev.txt    # once
 ```
 
-### Backend unit/integration — 75 tests
+### Backend unit/integration — 85 tests
 
 ```bash
 cd backend
@@ -507,7 +561,10 @@ Architecture, state machines, and the realtime flow:
 
 | Symptom | Cause / fix |
 |---|---|
-| `/setup` says the setup secret is invalid | `SETUP_SECRET` in `backend/.env` differs from what you typed; restart the API after editing `.env` |
+| `/setup` says the setup secret is invalid | Local only: `SETUP_SECRET` in `backend/.env` differs from what you typed; restart the API after editing `.env` |
+| Cannot log in after `docker compose up` | Check `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` are set, then `docker compose logs api \| grep -i bootstrap` |
+| `docker compose logs api` shows "Bootstrap admin tidak lengkap" | Only one of the two bootstrap variables is set — set both or neither |
+| Bootstrap password rejected | Policy requires ≥10 chars with letters **and** digits |
 | Login succeeds but every request returns 401 | `COOKIE_SECURE=true` while browsing over plain HTTP — set it to `false` |
 | `403 Token CSRF tidak valid` | The `eg_csrf` cookie was cleared; reload the page |
 | Participant gets `Identitas tidak dapat diverifikasi` | Name does not normalize to exactly one roster entry, or the exam is not open for registration. Check the roster's *Kunci normalisasi* column |

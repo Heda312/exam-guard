@@ -26,15 +26,30 @@ process environment or a `.env` file. Booleans accept `true`/`false`/`1`/`0`.
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./data/examguard.db` | `postgres://` and `postgresql://` are auto-normalized to `postgresql+psycopg://` |
-| `AUTO_CREATE_TABLES` | `true` | Create tables at startup. Set `false` in production and use Alembic |
+| `AUTO_CREATE_TABLES` | `true` | Create tables at startup. The production container sets `false` and runs Alembic instead |
+| `RUN_MIGRATIONS` | `true` | Docker only: the entrypoint runs `alembic upgrade head` before starting |
 
 ## Secrets
 
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | Server-side secret. **Must** be replaced in production |
-| `SETUP_SECRET` | *(empty)* | Required by `/setup`. Empty disables the setup page |
+| `SETUP_SECRET` | *(empty)* | Required by the browser setup wizard. Empty disables it |
 | `SETUP_DISABLED` | `false` | Hard-disable first-run setup |
+
+## Unattended administrator bootstrap
+
+Used by the Docker entrypoint so no browser step is needed.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BOOTSTRAP_ADMIN_ENABLED` | `true` | Docker only: run the bootstrap step on start |
+| `BOOTSTRAP_ADMIN_EMAIL` | *(empty)* | Initial admin email. With the password set, the account is created on first boot |
+| `BOOTSTRAP_ADMIN_PASSWORD` | *(empty)* | Initial admin password (≥10 chars, letters + digits). The admin must change it on first login |
+| `BOOTSTRAP_ADMIN_NAME` | `Administrator` | Display name for the initial admin |
+
+The step is idempotent: it does nothing once any administrator exists, and it
+marks first-run setup as completed.
 
 ## Sessions
 
@@ -101,8 +116,8 @@ See `docs/DECISIONS.md` (D-1) for why the default is `none`.
 | `POSTGRES_DB` | `examguard` | Database name |
 | `POSTGRES_USER` | `examguard` | Database user |
 | `POSTGRES_PASSWORD` | *(required)* | Database password |
-| `HTTP_PORT` | `8080` | Host port mapped to nginx |
-| `CORS_ORIGINS` | `https://exam.heda.my.id` | Public origin(s) |
+| `WEB_PORT` | `9200` | Host port published by nginx. Point Cloudflare Tunnel at `http://127.0.0.1:9200` |
+| `API_PORT` | `8000` | In-container API port. The nginx template picks it up at start |
 | `COOKIE_SECURE` | `true` | Set `false` when serving the stack over plain HTTP |
 
 ## Frontend dev server only

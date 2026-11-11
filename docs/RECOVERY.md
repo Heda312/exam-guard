@@ -47,10 +47,46 @@ PY
 
 ---
 
-## 3. Re-run first-run setup
+## 3. Re-create the initial administrator from `.env`
 
-Setup is disabled once `app_settings.setup_completed = 'true'` or any admin
-exists. To re-enable it deliberately:
+The Docker entrypoint creates the first admin automatically from
+`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`. That step is a no-op once
+any administrator exists, so use one of these when you need to seed one again:
+
+```bash
+# Option A: no admin exists yet
+docker compose up -d
+docker compose logs api | grep -i bootstrap
+```
+
+```bash
+# Option B: force a reset of the existing admin password (see section 1),
+# or temporarily promote the account whose email is in BOOTSTRAP_ADMIN_EMAIL.
+# Remove the guard by demoting the current admins first:
+docker compose exec api python - <<'PY'
+from sqlalchemy import select
+from app.database import SessionLocal
+from app.models import User
+
+db = SessionLocal()
+for user in db.scalars(select(User).where(User.role == "ADMIN")).all():
+    user.role = "PROCTOR"
+db.commit()
+print("no admins left - restart the api container to re-bootstrap")
+PY
+```
+
+```bash
+docker compose restart api
+docker compose logs -f api
+```
+
+---
+
+## 4. Re-enable the browser setup wizard
+
+Only needed if you are not using the env-based bootstrap. Setup is disabled once
+`app_settings.setup_completed = 'true'` or any admin exists.
 
 ```bash
 # 1. Allow the setup page again
@@ -70,7 +106,8 @@ PY
 ```
 
 ```bash
-# 2. Set a fresh SETUP_SECRET in .env, then restart
+# 2. Set a fresh SETUP_SECRET in .env and make sure SETUP_DISABLED=false,
+#    then restart
 docker compose up -d api
 ```
 
@@ -79,7 +116,7 @@ Open `/setup` and create the new administrator. Afterwards set
 
 ---
 
-## 4. Force-revoke all sessions
+## 5. Force-revoke all sessions
 
 ```bash
 docker compose exec api python - <<'PY'
@@ -99,7 +136,7 @@ PY
 
 ---
 
-## 5. Participant cannot register
+## 6. Participant cannot register
 
 Work through the checklist in order:
 
@@ -118,7 +155,7 @@ Work through the checklist in order:
 
 ---
 
-## 6. Participant session stuck in `INITIALIZING` / `CONNECTION_LOST`
+## 7. Participant session stuck in `INITIALIZING` / `CONNECTION_LOST`
 
 ```bash
 docker compose exec api python - <<'PY'
@@ -142,7 +179,7 @@ Ask the participant to reload `/join` and complete the readiness steps again.
 
 ---
 
-## 7. Exam timer needs a manual correction
+## 8. Exam timer needs a manual correction
 
 Only for genuine operational incidents (documented in the audit log afterwards).
 
@@ -170,7 +207,7 @@ The expiry worker picks the change up within `EXPIRY_SWEEP_SECONDS`.
 
 ---
 
-## 8. Recover from a failed migration
+## 9. Recover from a failed migration
 
 ```bash
 docker compose exec api alembic current

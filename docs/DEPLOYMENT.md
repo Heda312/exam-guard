@@ -19,6 +19,9 @@ Two supported profiles:
 
 ## 2. First deployment (production)
 
+Deployment is: edit one env file, run one command. The API container waits for
+PostgreSQL, applies migrations, creates the initial administrator, and starts.
+
 ```bash
 git clone <repo> exam-guard && cd exam-guard
 cp .env.example .env
@@ -27,65 +30,72 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-APP_ENV=production
-PUBLIC_BASE_URL=https://exam.heda.my.id
-CORS_ORIGINS=https://exam.heda.my.id
-
-POSTGRES_DB=examguard
-POSTGRES_USER=examguard
+# required
 POSTGRES_PASSWORD=<strong-random-password>
-
 SECRET_KEY=<openssl rand -hex 32>
-SETUP_SECRET=<openssl rand -hex 24>
-SETUP_DISABLED=false
+PUBLIC_BASE_URL=https://exam.heda.my.id
 
+# unattended first admin
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=<strong-password, min 10 chars, letters+digits>
+
+# host port published by nginx (Cloudflare Tunnel targets this)
+WEB_PORT=9200
+
+# defaults that are already correct
+APP_ENV=production
 COOKIE_SECURE=true
-COOKIE_DOMAIN=
-PARTICIPANT_IDENTITY_MODE=none
-
-AUTO_CREATE_TABLES=false
-HTTP_PORT=8080
+SETUP_DISABLED=true
+RUN_MIGRATIONS=true
 ```
 
-Generate secrets:
+Generate the secret:
 
 ```bash
 openssl rand -hex 32     # SECRET_KEY
-openssl rand -hex 24     # SETUP_SECRET
 ```
 
-Start the stack and apply migrations:
+Deploy:
 
 ```bash
 docker compose up -d --build
-docker compose exec api alembic upgrade head
 docker compose logs -f api
+```
+
+Expected log sequence on first boot:
+
+```
+[entrypoint] Menunggu database siap…
+[entrypoint] Menerapkan migrasi (alembic upgrade head)…
+[entrypoint] Memeriksa akun administrator awal…
+examguard.bootstrap: Admin awal dibuat: admin@example.com
+[entrypoint] Menjalankan API pada port 8000…
 ```
 
 Verify:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:9200/healthz
+curl -fsS http://127.0.0.1:9200/health
 ```
 
-Then open `https://exam.heda.my.id/setup` **once** and create the administrator
-using `SETUP_SECRET`. Setup disables itself permanently.
+Then sign in at `https://exam.heda.my.id` with the bootstrap credentials. The
+account is flagged `must_change_password`, so you must set a new password before
+continuing. `/setup` is closed permanently because `SETUP_DISABLED=true`.
 
-After setup, harden the environment:
+Optionally remove the bootstrap password from disk afterwards (it is already a
+no-op once an admin exists):
 
 ```env
-SETUP_SECRET=
-SETUP_DISABLED=true
+BOOTSTRAP_ADMIN_PASSWORD=
 ```
-
-and restart: `docker compose up -d`.
 
 ---
 
 ## 3. Cloudflare Tunnel
 
-The tunnel terminates TLS, so nginx serves plain HTTP on port 8080.
+The tunnel terminates TLS, so nginx serves plain HTTP on the host port
+(`WEB_PORT`, default `9200`).
 
 `/etc/cloudflared/config.yml` on the host:
 
@@ -95,7 +105,7 @@ credentials-file: /root/.cloudflared/<tunnel-id>.json
 
 ingress:
   - hostname: exam.heda.my.id
-    service: http://127.0.0.1:8080
+    service: http://127.0.0.1:9200
     originRequest:
       connectTimeout: 30s
       noTLSVerify: true
@@ -123,21 +133,23 @@ The production compose file with plain-HTTP overrides:
 
 ```env
 APP_ENV=development
-PUBLIC_BASE_URL=http://192.168.1.6:8080
-CORS_ORIGINS=http://192.168.1.6:8080
+PUBLIC_BASE_URL=http://192.168.1.6:9200
+CORS_ORIGINS=http://192.168.1.6:9200
 COOKIE_SECURE=false
-HTTP_PORT=8080
+WEB_PORT=9200
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=<strong-password>
 ```
 
 ```bash
 docker compose up -d --build
 ```
 
-Participants on the same network open `http://192.168.1.6:8080/join`.
+Participants on the same network open `http://192.168.1.6:9200/join`.
 
 > The extension manifest lists the production origin plus the local dev origins
 > (`localhost:5173`/`127.0.0.1:5173`). To use the extension against a LAN host,
-> add `http://192.168.1.6:8080/*` to both `host_permissions` and
+> add `http://192.168.1.6:9200/*` to both `host_permissions` and
 > `content_scripts.matches` in `extension/manifest.json`, then reload the
 > extension.
 
@@ -197,12 +209,23 @@ backup is the authoritative record.
 
 ```bash
 git pull
-docker compose build
-docker compose up -d
-docker compose exec api alembic upgrade head
+docker compose up -d --build
 ```
 
+Migrations run automatically on start (the entrypoint runs `alembic upgrade
+head` before the API). To upgrade without migrations, set `RUN_MIGRATIONS=false`
+for that deploy.
+
 Check `/health` and the audit log page afterwards.
+
+### Updating the host port or API port
+
+`WEB_PORT` and `API_PORT` come from `.env`; the nginx config is rendered from a
+template at container start, so only a restart is needed:
+
+```bash
+docker compose up -d
+```
 
 ---
 

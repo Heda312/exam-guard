@@ -1,5 +1,9 @@
+# ExamGuard web tier: serves the SPA and reverse-proxies the API + WebSocket.
+#
+# Rendered from a template at container start so the upstream host/port come
+# from the environment (API_HOST / API_PORT) instead of being hardcoded.
 upstream examguard_api {
-    server api:8000;
+    server ${API_HOST}:${API_PORT};
     keepalive 32;
 }
 
@@ -8,7 +12,7 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
-# Basic abuse protection for auth/registration endpoints.
+# Abuse protection for auth/registration endpoints.
 limit_req_zone $binary_remote_addr zone=auth_zone:10m rate=10r/m;
 limit_req_zone $binary_remote_addr zone=register_zone:10m rate=30r/m;
 
@@ -18,7 +22,6 @@ server {
 
     client_max_body_size 4m;
 
-    # Security headers
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
