@@ -1,0 +1,11 @@
+# Keep shell scripts usable in Linux containers regardless of the host OS.
+# On Windows, core.autocrlf would otherwise turn these into CRLF files, which
+# breaks `#!/bin/sh` scripts with "bad interpreter" errors.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+deploy/*.inc    text eol=lf
+deploy/*.template text eol=lf
+
+# Everything else: let Git normalize line endings normally.
+* text=auto
