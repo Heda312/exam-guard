@@ -117,7 +117,7 @@ async function updateBadge() {
     return;
   }
   if (session.monitoring) {
-    await chrome.action.setBadgeBackgroundColor({ color: "#28543F" });
+    await chrome.action.setBadgeBackgroundColor({ color: "#315C46" });
     await chrome.action.setBadgeText({ text: buffer.length > 0 ? String(buffer.length) : "ON" });
     return;
   }
@@ -635,16 +635,16 @@ function renderOverlay(payload) {
     "max-width:460px",
     "width:100%",
     "box-sizing:border-box",
-    "font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif",
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif",
     payload.danger
-      ? "background:linear-gradient(180deg,#fff5f4 0%,#ffe9e6 100%)"
-      : "background:#fffcf6",
-    payload.danger ? "color:#7f1d1d" : "color:#18392c",
-    "border-radius:18px",
+      ? "background:linear-gradient(180deg,#fff 0%,#fff6f5 100%)"
+      : "background:#fff",
+    "color:#202923",
+    "border-radius:22px",
     "padding:26px",
-    "box-shadow:0 20px 48px rgba(24,57,44,0.3)",
-    `border:1px solid ${payload.tone}`,
-    `border-top:6px solid ${payload.tone}`,
+    "box-shadow:0 12px 32px rgba(32,41,35,0.14)",
+    payload.danger ? "border:1px solid #ecd4d1" : "border:1px solid #dfe5df",
+    `border-top:4px solid ${payload.tone}`,
   ].join(";");
 
   const icon = document.createElement("div");
@@ -670,7 +670,7 @@ function renderOverlay(payload) {
     "font-size:20px",
     "line-height:1.3",
     "margin:0 0 8px",
-    payload.danger ? "color:#991b1b" : "color:#18392c",
+    payload.danger ? "color:#9f3934" : "color:#202923",
   ].join(";");
 
   const message = document.createElement("p");
@@ -680,7 +680,7 @@ function renderOverlay(payload) {
     "line-height:1.55",
     "margin:0 0 10px",
     "font-weight:600",
-    payload.danger ? "color:#7f1d1d" : "color:#2f4038",
+    "color:#202923",
   ].join(";");
 
   const note = document.createElement("p");
@@ -689,7 +689,7 @@ function renderOverlay(payload) {
     "font-size:12.5px",
     "line-height:1.55",
     "margin:0 0 18px",
-    payload.danger ? "color:#b45309" : "color:#5f665f",
+    payload.danger ? "color:#965b56" : "color:#69726b",
   ].join(";");
 
   const button = document.createElement("button");

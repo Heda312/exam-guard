@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { errorMessage, participantApi, participantStore } from "../api";
 import type { ParticipantConfig, ParticipantSession, PublicExamInfo } from "../types";
-import { Alert, formatDuration, formatTime } from "../ui";
+import { Alert, formatDuration, formatTime, participantStatusLabel } from "../ui";
 
 type Phase = "form" | "waiting" | "exam" | "finished";
 
@@ -36,6 +36,7 @@ export default function ParticipantPage() {
   const [endReason, setEndReason] = useState<"TIME_EXPIRED" | "COMPLETED">("TIME_EXPIRED");
   const heartbeatRef = useRef<number | null>(null);
   const refreshRef = useRef<() => void>(() => undefined);
+  const examInfoRequestsRef = useRef(new Map<string, Promise<PublicExamInfo>>());
 
   const isFinished = useMemo(
     () => ["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session?.status ?? ""),
@@ -134,6 +135,38 @@ export default function ParticipantPage() {
     }
   }, []);
 
+  // Recover duration metadata once per exam, including resumed sessions.
+  useEffect(() => {
+    if (!session || examInfo?.exam_code === session.exam_code) return;
+    let disposed = false;
+    let request = examInfoRequestsRef.current.get(session.exam_id);
+    if (!request) {
+      request = participantApi.publicExam(session.exam_code);
+      examInfoRequestsRef.current.set(session.exam_id, request);
+    }
+    void request
+      .then((info) => {
+        if (!disposed) setExamInfo(info);
+      })
+      .catch(() => {
+        // The persisted timer window still supplies duration if lookup fails.
+      });
+    return () => {
+      disposed = true;
+    };
+    // Only identity changes matter; session polling must not repeat the lookup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.exam_id, session?.exam_code, examInfo?.exam_code]);
+
+  const durationSeconds = useMemo(() => {
+    if (examInfo && (!session || examInfo.exam_code === session.exam_code)) {
+      return examInfo.duration_minutes * 60;
+    }
+    if (!session?.started_at || !session.ends_at) return null;
+    const duration = (new Date(session.ends_at).getTime() - new Date(session.started_at).getTime()) / 1000;
+    return Number.isFinite(duration) && duration >= 0 ? duration : null;
+  }, [examInfo, session?.exam_code, session?.started_at, session?.ends_at]);
+
   /* ---------------------------- Countdown ---------------------------- */
   const syncCountdown = useCallback((target: ParticipantSession) => {
     if (!target.ends_at) {
@@ -193,18 +226,21 @@ export default function ParticipantPage() {
     let disposed = false;
     let pingTimer: number | null = null;
     let reconnectTimer: number | null = null;
+    let socket: WebSocket | null = null;
 
     const connect = () => {
+      if (disposed) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const query = token ? `?token=${encodeURIComponent(token)}` : "";
-      const socket = new WebSocket(
+      socket = new WebSocket(
         `${protocol}//${window.location.host}/ws/participant/${participantSessionId}${query}`,
       );
 
       socket.onopen = () => {
         if (disposed) return;
+        void refreshRef.current();
         pingTimer = window.setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+          if (socket?.readyState === WebSocket.OPEN) socket.send("ping");
         }, 20000);
       };
 
@@ -272,6 +308,7 @@ export default function ParticipantPage() {
       disposed = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (pingTimer) window.clearInterval(pingTimer);
+      socket?.close();
     };
   }, [session?.participant_session_id, isFinished]);
 
@@ -362,6 +399,26 @@ export default function ParticipantPage() {
         data-phase={phase}
       >
         <div className="participant-hero">
+          <div className="participant-brand">
+            <span className="participant-brand-mark" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 3 4.5 6v5.5c0 4.2 3 7.8 7.5 9.5 4.5-1.7 7.5-5.3 7.5-9.5V6L12 3Z"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="m8.5 12 2.3 2.3 4.7-4.6"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+            <span>ExamGuard</span>
+          </div>
           <div className="row-between">
             <div>
               <h1>{phase === "form" ? "Pendaftaran peserta ujian" : session?.exam_name ?? "Ujian"}</h1>
@@ -379,6 +436,31 @@ export default function ParticipantPage() {
 
         <div className="participant-body">
           <Steps phase={phase} />
+
+          {session || examInfo ? (
+            <dl className="participant-overview" aria-label="Ringkasan ujian">
+              <div className="participant-overview-item">
+                <dt className="small muted">Durasi ujian</dt>
+                <dd className="participant-overview-value">
+                  {durationSeconds !== null ? formatDuration(durationSeconds) : "—"}
+                </dd>
+              </div>
+              <div className={`participant-overview-item ${remaining !== null && remaining < 300 ? "is-critical" : ""}`}>
+                <dt className="small muted">Sisa waktu</dt>
+                <dd className="participant-overview-value">
+                  {session?.ends_at
+                    ? remaining !== null ? formatDuration(remaining) : "Menyinkronkan…"
+                    : "Belum dimulai"}
+                </dd>
+              </div>
+              <div className="participant-overview-item">
+                <dt className="small muted">Status sesi</dt>
+                <dd className="participant-overview-value">
+                  {session ? participantStatusLabel(session.status) : "Belum terdaftar"}
+                </dd>
+              </div>
+            </dl>
+          ) : null}
 
           {error ? <Alert tone="error">{error}</Alert> : null}
 
@@ -430,7 +512,7 @@ export default function ParticipantPage() {
                   autoComplete="name"
                 />
                 <span className="hint">
-                  Nama harus kapitalisasi tiap kata, contoh: "John Doe".
+                  Gunakan nama sesuai roster ujian. Huruf besar dan kecil tidak memengaruhi pencocokan.
                 </span>
               </div>
 
@@ -498,9 +580,9 @@ export default function ParticipantPage() {
                 <div className="card" style={{ background: "rgba(220,231,217,0.45)" }}>
                   <h2 style={{ fontSize: 18, marginBottom: 8 }}>Ujian sudah dibuka</h2>
                   <p className="small muted" style={{ marginBottom: 12 }}>
-                    Pengawas telah memulai ujian. Waktu ujian <strong>belum berjalan</strong> untuk
-                    Anda sampai Anda menekan tombol di bawah. Tekan tombol itu ketika Anda siap
-                    mengerjakan.
+                    Pengawas telah memulai ujian. Waktu ujian <strong>terus berjalan di server</strong>,
+                    termasuk sebelum Anda membuka formulir atau saat koneksi terputus. Tekan
+                    <strong> Buka ujian</strong> ketika Anda siap mengerjakan.
                   </p>
                   <div className="row">
                     {session.google_forms_url ? (
@@ -545,7 +627,7 @@ export default function ParticipantPage() {
                       Perbarui status
                     </button>
                     <span className="small muted">
-                      Status sesi: <strong>{session.status}</strong>
+                      Status sesi: <strong>{participantStatusLabel(session.status)}</strong>
                     </span>
                   </div>
                   <div className="row mt-16" style={{ gap: 8 }}>
@@ -575,7 +657,7 @@ export default function ParticipantPage() {
                   <div className="eyebrow">Sesi berlangsung</div>
                   <h2 style={{ fontSize: 20 }}>{session.participant.full_name}</h2>
                   <p className="small muted">
-                    Status: <strong>{session.status}</strong> · Koneksi: {session.connection_state}
+                    Status: <strong>{participantStatusLabel(session.status)}</strong> · Koneksi: {session.connection_state}
                   </p>
                 </div>
                 {remaining !== null ? (
@@ -595,8 +677,8 @@ export default function ParticipantPage() {
               <div className="card" style={{ background: "rgba(220,231,217,0.35)" }}>
                 <h3 style={{ fontSize: 16, marginBottom: 6 }}>Formulir ujian</h3>
                 <p className="small muted" style={{ marginBottom: 12 }}>
-                  Extension akan membuka formulir ujian pada tab ini secara otomatis begitu ujian
-                  dimulai, lalu memulai pemantauan setelah formulir termuat.
+                  Tekan tombol di bawah untuk membuka formulir ujian pada tab ini melalui extension.
+                  Pemantauan dimulai setelah formulir termuat; waktu ujian tetap mengikuti server.
                 </p>
                 <div className="row">
                   {session.google_forms_url ? (
@@ -621,7 +703,7 @@ export default function ParticipantPage() {
                 {!extensionDetected ? (
                   <div className="small mt-16" style={{ color: "var(--warning-500)" }}>
                     Extension ExamGuard belum terdeteksi. Pasang dan aktifkan extension agar formulir
-                    dapat dibuka otomatis.
+                    dapat dibuka dan aktivitas browser terpantau.
                   </div>
                 ) : null}
               </div>
@@ -671,7 +753,7 @@ export default function ParticipantPage() {
                 <div>
                   <strong>Ujian selesai.</strong>
                   <div className="small">
-                    Status akhir: {session.status}. Anda boleh menutup halaman ini.
+                    Status akhir: {participantStatusLabel(session.status)}. Anda boleh menutup halaman ini.
                   </div>
                 </div>
               </div>
