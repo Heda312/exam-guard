@@ -170,18 +170,30 @@ def _promote_to_waiting_if_needed(session: ParticipantSession, exam_session: Exa
 def mark_ready(
     db: Session, participant_session: ParticipantSession, page_url: Optional[str] = None
 ) -> ParticipantSession:
-    """Participant reports that the exam page is loaded and verified (spec §11.2)."""
+    """Participant reports that the exam page is loaded and verified (spec §11.2).
+
+    ``WAITING`` and ``REGISTERED`` are accepted too: a participant who registers
+    while the exam is already LIVE lands in WAITING (or REGISTERED when the exam
+    session was created lazily), and refusing them here is what made the
+    "Buka ujian" button fail silently for late arrivals.
+    """
     exam_session = db.get(ExamSession, participant_session.exam_session_id)
     if exam_session is None or exam_session.status != "LIVE":
         raise RegistrationError("Ujian belum dimulai.", status_code=409, code="exam_not_live")
 
     if participant_session.status in {"READY", "MONITORING"}:
         return participant_session
-    if participant_session.status not in {"INITIALIZING", "CONNECTION_LOST"}:
+    if participant_session.status not in {
+        "INITIALIZING",
+        "CONNECTION_LOST",
+        "REGISTERED",
+        "WAITING",
+    }:
         raise RegistrationError(
             "Status sesi tidak memungkinkan verifikasi kesiapan.", status_code=409, code="invalid_state"
         )
-    assert_participant_transition(participant_session.status, "READY")
+    # Jump straight to READY: the intermediate states are bookkeeping, not a
+    # gate the participant has to pass through.
     participant_session.status = "READY"
     db.flush()
     return participant_session

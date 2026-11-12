@@ -34,7 +34,12 @@ from ..schemas import (
     ParticipantCard,
     ParticipantDetail,
 )
-from ..services.exams import ensure_utc, get_active_exam_session, time_remaining_seconds
+from ..services.exams import (
+    ensure_utc,
+    get_active_exam_session,
+    is_late_join,
+    time_remaining_seconds,
+)
 from ..services.monitoring import (
     EVENT_SUMMARIES,
     incident_context_map,
@@ -62,6 +67,7 @@ def _build_card(
     *,
     latest_event: Optional[tuple[Optional[str], Optional[datetime]]] = None,
     latest_incident: Optional[ViolationIncident] = None,
+    exam_session: Optional[ExamSession] = None,
 ) -> ParticipantCard:
     link = roster.get(ps.participant_id)
     summary, last_activity = (
@@ -84,6 +90,8 @@ def _build_card(
         latest_event_summary=summary,
         last_heartbeat_at=ensure_utc(ps.last_heartbeat_at),
         connected_at=ensure_utc(ps.connected_at),
+        is_late=is_late_join(exam_session, ps) if exam_session is not None else False,
+        joined_at=ensure_utc(ps.created_at),
     )
 
 
@@ -139,6 +147,7 @@ def _cards_for_exam_session(
             incident_counts,
             latest_event=latest_events.get(ps.id, (None, None)),
             latest_incident=latest_incidents.get(ps.id),
+            exam_session=exam_session,
         )
         for ps in sessions
     ]
@@ -317,6 +326,7 @@ def participant_detail(
         incidents_map,
         latest_event=latest_events.get(ps.id, (None, None)),
         latest_incident=latest_incidents.get(ps.id),
+        exam_session=exam_session,
     )
 
     events = list(

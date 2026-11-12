@@ -604,7 +604,18 @@ export default function MonitoringPage() {
                     {initials(card.full_name)}
                   </div>
                   <div className="participant-identity">
-                    <div className="participant-name">{card.full_name}</div>
+                    <div className="participant-name">
+                      {card.full_name}
+                      {card.is_late ? (
+                        <span
+                          className="badge badge-warning"
+                          style={{ marginLeft: 8 }}
+                          title={`Bergabung ${formatRelative(card.joined_at, now)} setelah ujian dimulai`}
+                        >
+                          Terlambat
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="participant-meta">
                       {card.npm ? `NPM ${card.npm}` : "NPM tidak diisi"}
                       {card.group_name ? ` · ${card.group_name}` : ""}

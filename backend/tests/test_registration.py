@@ -74,6 +74,100 @@ def test_registration_closed_when_exam_completed(admin_client: TestClient) -> No
     assert "berakhir" in body["detail"]
 
 
+def test_registration_stays_open_while_exam_is_live(admin_client: TestClient) -> None:
+    """Late arrival must be allowed, then flagged — not blocked.
+
+    A participant who only reaches the page after the proctor pressed start used
+    to be rejected with "Ujian sudah dimulai." and could never join.
+    """
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    admin_client.post(f"/api/v1/exams/{exam['id']}/start")
+
+    status, body, token = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+    assert token
+    assert body["exam_status"] == "LIVE"
+
+
+def test_late_participant_can_reach_monitoring(admin_client: TestClient) -> None:
+    """The full late path: register while LIVE, then ready + monitoring start.
+
+    This is the exact sequence the "Buka ujian" button triggers, and it used to
+    fail silently because mark_ready rejected the WAITING status.
+    """
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    admin_client.post(f"/api/v1/exams/{exam['id']}/start")
+
+    status, body, token = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+    ps_id = body["participant_session_id"]
+
+    ready = admin_client.post(
+        "/api/v1/participant/ready",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+    assert ready.status_code == 200, ready.text
+
+    started = admin_client.post(
+        "/api/v1/participant/monitoring/start",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] == "MONITORING"
+
+
+def test_late_join_is_flagged_on_the_monitoring_card(admin_client: TestClient, db) -> None:
+    """The card carries is_late so proctors see who arrived after the start."""
+    from datetime import timedelta
+
+    from app.models import ExamSession, utcnow
+
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    admin_client.post(f"/api/v1/exams/{exam['id']}/start")
+
+    status, body, _ = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+
+    # Pretend the exam started long before this participant registered.
+    exam_session = db.query(ExamSession).filter(ExamSession.exam_id == exam["id"]).one()
+    exam_session.started_at = utcnow() - timedelta(minutes=10)
+    db.commit()
+
+    state = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor/state").json()
+    assert len(state["cards"]) == 1
+    card = state["cards"][0]
+    assert card["is_late"] is True
+    assert card["joined_at"] is not None
+
+
+def test_on_time_join_is_not_flagged(admin_client: TestClient) -> None:
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib")
+    status, body, token = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    assert status == 201, body
+    admin_client.post(f"/api/v1/exams/{exam['id']}/start")
+
+    ps_id = body["participant_session_id"]
+    admin_client.post(
+        "/api/v1/participant/ready",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+    admin_client.post(
+        "/api/v1/participant/monitoring/start",
+        json={"participant_session_id": ps_id},
+        headers={"X-Participant-Token": token},
+    )
+
+    state = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor/state").json()
+    assert state["cards"][0]["is_late"] is False
+
+
 def test_unknown_exam_id_is_generic(admin_client: TestClient) -> None:
     status, body, _ = register_participant(admin_client, "EXG-9999-999", "Alek Nurhabib")
     assert status == 404

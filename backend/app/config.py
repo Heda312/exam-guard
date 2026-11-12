@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # --- Exam defaults ----------------------------------------------------
     default_exam_duration_minutes: int = Field(default=90)
     commitment_version: str = Field(default="exam-integrity-v1")
+    # A participant who joins more than this many seconds after the exam started
+    # is flagged as late on the monitoring dashboard (never blocked).
+    late_join_grace_seconds: int = Field(default=60)
 
     # --- Monitoring -------------------------------------------------------
     heartbeat_interval_seconds: int = Field(default=10)

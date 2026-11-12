@@ -148,6 +148,9 @@ export interface ParticipantCard {
   latest_event_summary: string | null;
   last_heartbeat_at: string | null;
   connected_at: string | null;
+  /** Joined after the exam had already started. Never blocks the participant. */
+  is_late: boolean;
+  joined_at: string | null;
 }
 
 export interface MonitoringEvent {

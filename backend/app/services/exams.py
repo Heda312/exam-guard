@@ -79,24 +79,50 @@ def ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value.astimezone(timezone.utc)
 
 
-def registration_window_state(exam: Exam, now: Optional[datetime] = None) -> tuple[bool, str]:
-    """Return (allowed, reason)."""
+def registration_window_state(
+    exam: Exam, now: Optional[datetime] = None
+) -> tuple[bool, str]:
+    """Return (allowed, reason).
+
+    Registration stays open while the exam is LIVE so a participant who is late
+    (connection problem, wrong device, only just arrived) can still join and
+    work with the remaining time. Lateness is surfaced as a flag on the
+    monitoring card instead of being a hard lockout.
+    """
     now = now or utcnow()
     if exam.status in {"COMPLETED", "CANCELLED"}:
         return False, "Ujian telah berakhir."
     if exam.status == "DRAFT":
         return False, "Pendaftaran untuk ujian ini belum dibuka."
-    if exam.status in {"STARTING", "LIVE"}:
-        return False, "Ujian sudah dimulai."
+    # STARTING and LIVE are explicitly allowed: joining late is not an error.
     opens = ensure_utc(exam.registration_opens_at)
     closes = ensure_utc(exam.registration_closes_at)
     if opens and now < opens:
         return False, "Pendaftaran untuk ujian ini belum dibuka."
     if closes and now > closes:
         return False, "Pendaftaran untuk ujian ini telah ditutup."
-    if exam.status not in {"REGISTRATION_OPEN", "WAITING", "SCHEDULED"}:
+    if exam.status not in {"REGISTRATION_OPEN", "WAITING", "SCHEDULED", "STARTING", "LIVE"}:
         return False, "Pendaftaran untuk ujian ini belum dibuka."
     return True, ""
+
+
+def is_late_join(
+    exam_session: Optional[ExamSession],
+    participant_session: "ParticipantSession",
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when the participant joined after the exam had already started.
+
+    Used to flag late arrivals on the monitoring dashboard rather than blocking
+    them. A small grace period avoids flagging everyone who registers in the
+    seconds around the proctor pressing start.
+    """
+    if exam_session is None or exam_session.started_at is None:
+        return False
+    joined_at = ensure_utc(participant_session.created_at) or now or utcnow()
+    started_at = ensure_utc(exam_session.started_at)
+    grace = timedelta(seconds=settings.late_join_grace_seconds)
+    return joined_at > started_at + grace
 
 
 def get_active_exam_session(db: Session, exam_id: str) -> Optional[ExamSession]:

@@ -364,6 +364,10 @@ class ParticipantCard(BaseModel):
     latest_event_summary: Optional[str]
     last_heartbeat_at: Optional[datetime]
     connected_at: Optional[datetime]
+    # Set when the participant joined after the exam had already started. Shown
+    # as a badge on the card; it never blocks them from taking the exam.
+    is_late: bool = False
+    joined_at: Optional[datetime] = None
 
 
 class ParticipantDetail(ParticipantCard):
