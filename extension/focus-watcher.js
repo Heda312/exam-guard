@@ -22,8 +22,16 @@
   if (window.__examguardFocusWatcherInstalled) return;
   window.__examguardFocusWatcherInstalled = true;
 
+  // Native controls and iframe focus can blur the window without leaving the document.
+  const BLUR_CONFIRM_MS = 150;
+  // A cancelled beforeunload must not leave focus detection suppressed.
+  const UNLOAD_RESET_MS = 4000;
+
   let lastHiddenAt = 0;
   let lastVisibleAt = 0;
+  let blurTimer = null;
+  let unloading = false;
+  let unloadResetTimer = null;
 
   function post(type, extra) {
     const payload = {
@@ -68,28 +76,50 @@
     post("focus_restored", { reason });
   }
 
-  window.addEventListener(
-    "blur",
-    () => onHidden("page_blur"),
-    true,
-  );
+  function markUnloading() {
+    unloading = true;
+    clearTimeout(unloadResetTimer);
+    unloadResetTimer = setTimeout(() => {
+      unloading = false;
+    }, UNLOAD_RESET_MS);
+  }
 
-  window.addEventListener(
-    "focus",
-    () => onVisible("page_focus"),
-    true,
-  );
+  // Capture-phase listeners would mistake answer-field blur for window focus loss.
+  window.addEventListener("blur", (event) => {
+    if (event.target !== window) return;
+    clearTimeout(blurTimer);
+    blurTimer = setTimeout(() => {
+      blurTimer = null;
+      if (unloading || document.hasFocus()) return;
+      onHidden("page_blur");
+    }, BLUR_CONFIRM_MS);
+  });
+
+  window.addEventListener("focus", (event) => {
+    if (event.target !== window) return;
+    if (blurTimer) {
+      // Transient blur that never became a reported loss.
+      clearTimeout(blurTimer);
+      blurTimer = null;
+      return;
+    }
+    onVisible("page_focus");
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      if (unloading) return;
       onHidden("document_hidden");
     } else if (document.visibilityState === "visible") {
       onVisible("document_visible");
     }
   });
 
-  // No pagehide listener: a same-tab page move inside the exam form (multi-page
-  // Google Forms, Docs navigation) unloads this document too, and reporting that
-  // as focus loss flagged legitimate navigation as a violation. Leaving the exam
-  // host is already caught by the service worker's NAVIGATION/TAB_CLOSED events.
+  // Document unload also hides it; the worker distinguishes internal from external navigation.
+  window.addEventListener("beforeunload", markUnloading);
+  window.addEventListener("pagehide", markUnloading);
+  window.addEventListener("pageshow", () => {
+    unloading = false;
+    clearTimeout(unloadResetTimer);
+  });
 })();
