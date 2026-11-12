@@ -4,17 +4,22 @@
 # Use this instead of portainer-stack.yml when the GHCR images are not published
 # yet (for example while GitHub Actions is blocked by a billing issue).
 #
+# This file MUST stay at the repository root: its build contexts use
+# `context: .`, which Docker Compose resolves relative to the compose file. That
+# is the layout Portainer's "Repository" build method expects and avoids the
+# fragile `context: ..` escape.
+#
 # Deploy from Portainer:
 #   Stacks → Add stack → Build method: Repository
 #     Repository URL : https://github.com/Heda312/exam-guard
 #     Repository ref : master
-#     Compose path   : deploy/portainer-build-stack.yml
+#     Compose path   : portainer-build-stack.yml
 #
 # Then set the environment variables and Deploy. Portainer clones the repo onto
 # the host and builds both images there, so no registry is involved.
 #
 # Requirements: the Portainer host needs ~2 GB free disk and a few minutes for
-# the first build (npm install + pip install).
+# the first build (npm ci + pip install).
 # =============================================================================
 
 services:
@@ -35,10 +40,10 @@ services:
     networks: [examguard]
 
   api:
-    # Build context is the repository root, so the relative paths inside
-    # Dockerfile (backend/, deploy/) resolve correctly.
+    # Build context is the repository root (this file's directory), so the
+    # relative paths inside Dockerfile (backend/, deploy/) resolve correctly.
     build:
-      context: ..
+      context: .
       dockerfile: Dockerfile
     image: examguard-api:local
     restart: unless-stopped
@@ -104,7 +109,7 @@ services:
 
   web:
     build:
-      context: ..
+      context: .
       dockerfile: web.Dockerfile
     image: examguard-web:local
     restart: unless-stopped

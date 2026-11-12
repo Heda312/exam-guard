@@ -201,7 +201,10 @@ credential so the stack can pull them.
 ### Build from Git instead
 
 If you would rather not deal with a registry at all, Portainer can clone the repo
-and build the images on the host:
+and build the images on the host.
+
+**No need to clone anything yourself** — Portainer performs the clone into its
+own working directory on the host.
 
 **Stacks → Add stack → Build method: Repository**
 
@@ -209,7 +212,12 @@ and build the images on the host:
 |---|---|
 | Repository URL | `https://github.com/Heda312/exam-guard` |
 | Repository reference | `master` |
-| Compose path | `deploy/portainer-build-stack.yml` |
+| Compose path | `portainer-build-stack.yml` |
+
+The compose path has no `deploy/` prefix on purpose: that file uses
+`context: .`, which Docker Compose resolves relative to the compose file, so it
+must sit at the repository root for `backend/` and `deploy/` to be inside the
+build context.
 
 Set the same environment variables as above, then **Deploy**. The first build
 takes a few minutes (`npm ci` + `pip install`) and needs ~2 GB free disk.
@@ -217,7 +225,78 @@ takes a few minutes (`npm ci` + `pip install`) and needs ~2 GB free disk.
 Trade-offs: no registry, no `git pull` on the host, but every redeploy rebuilds
 and the images stay local to that Portainer instance.
 
+#### Step-by-step
+
+1. **Login** ke Portainer → menu **Stacks** → **Add stack**.
+2. **Name**: `exam-guard`. **Build method**: `Repository`.
+3. Isi repository:
+
+   | Field | Value |
+   |---|---|
+   | Repository URL | `https://github.com/Heda312/exam-guard` |
+   | Repository reference | `master` |
+   | Compose path | `portainer-build-stack.yml` |
+
+   Repo ini **publik**, jadi tidak butuh kredensial Git.
+
+4. Scroll ke bagian **Environment variables** → **Load variables from .env file**
+   atau klik **Add variable** satu per satu. Minimal:
+
+   ```
+   POSTGRES_PASSWORD      = <password database yang kuat>
+   SECRET_KEY             = <hasil dari: openssl rand -hex 32>
+   PUBLIC_BASE_URL        = https://exam.heda.my.id
+   BOOTSTRAP_ADMIN_USERNAME = heda
+   BOOTSTRAP_ADMIN_PASSWORD = WedhusGembel5
+   COOKIE_SECURE          = true
+   WEB_PORT               = 9200
+   ```
+
+   `openssl rand -hex 32` bisa dijalankan dari Portainer → **Containers** →
+   klik container → **Console**, atau dari laptopmu lalu di-paste.
+
+5. Klik **Deploy**.
+6. Tunggu. **Stacks → exam-guard → Status** menunjukkan:
+   - `db` → `healthy` (±15 detik)
+   - `api` → build selesai (±3–5 menit), lalu `healthy` (±1 menit untuk migrasi)
+   - `web` → `healthy`
+
+   Progress build bisa dilihat di **Stacks → exam-guard → Logs** (pilih service
+   `api` / `web`) dan **Containers → Image**.
+
+7. **Cek** dari laptopmu:
+
+   ```bash
+   curl -fsS http://<IP-SERVER>:9200/health
+   # {"status":"ok","app":"ExamGuard",...}
+   ```
+
+8. Arahkan **Cloudflare Tunnel** ke `http://127.0.0.1:9200` (bagian 4 di bawah).
+
+9. Login di `https://exam.heda.my.id` dengan **`heda` / `WedhusGembel5`**, lalu
+   ganti kata sandi lewat **Akun → Ubah kata sandi**.
+
+#### Update setelahnya
+
+**Stacks → exam-guard → Pull and redeploy**. Portainer menarik perubahan dari
+repo dan build ulang. Aktifkan **Webhook** di stack supaya rebuild otomatis
+setiap kali ada push ke `master`.
+
+#### Kalau build gagal
+
+Buka **Stacks → exam-guard → Logs** dan cari service yang gagal. Penyebab
+yang paling sering:
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| `failed to compute cache key` / `COPY failed` | build context salah | pastikan Compose path `portainer-build-stack.yml` (tanpa `deploy/`) |
+| `npm ci` gagal | lockfile tidak sinkron | rebuild dari `master` yang terbaru |
+| `ERROR: for exam-guard-api Cannot connect to the Docker daemon` | Portainer tidak punya akses socket Docker | cek **Environment → Socket Proxy** tidak aktif, atau Daemon dikonfigurasi benar |
+| timeout saat build | host kekurangan RAM/disk | butuh ~2 GB disk dan ≥2 GB RAM |
+
 ---
+
+## 3b. Cloudflare Tunnel
 
 The tunnel terminates TLS, so nginx serves plain HTTP on the host port
 (`WEB_PORT`, default `9200`).

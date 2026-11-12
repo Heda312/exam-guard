@@ -343,7 +343,7 @@ Update later with **Stacks → exam-guard → Pull and redeploy**.
 > **No images published yet?** GitHub Actions must build them. If it is blocked
 > by a billing issue, either push the images once from your machine
 > (`scripts/build-push-ghcr.ps1`) or use **Build method: Repository** with
-> `deploy/portainer-build-stack.yml` — Portainer then builds on the host.
+> `portainer-build-stack.yml` — Portainer then builds on the host.
 
 ### Cloudflare Tunnel
 

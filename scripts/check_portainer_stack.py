@@ -54,15 +54,26 @@ def validate(path: Path, *, expect_build: bool) -> int:
                 check(f"{name}: uses a stock image", bool(service.get("image")))
                 check(f"{name}: has no build context", "build" not in service)
             else:
-                check(f"{name}: has a build context", "build" in service)
+                build = service.get("build") or {}
+                check(f"{name}: has a build context", bool(build))
+                # `context: .` resolves to the compose file's own directory, so
+                # the file must sit at the repo root for backend/ and deploy/ to
+                # be inside the build context.
                 check(
-                    f"{name}: builds from the repo root",
-                    (service.get("build") or {}).get("context") == "..",
-                    str((service.get("build") or {}).get("context")),
+                    f"{name}: builds from the compose file directory",
+                    build.get("context") == ".",
+                    str(build.get("context")),
                 )
         else:
             check(f"{name}: uses a prebuilt image", bool(service.get("image")), service.get("image", ""))
             check(f"{name}: has no build context", "build" not in service)
+
+    if expect_build:
+        check(
+            "build stack lives at the repo root",
+            path.parent == ROOT,
+            str(path.parent.relative_to(ROOT)) if path.parent != ROOT else "repo root",
+        )
 
     if not expect_build:
         api_image = services["api"]["image"]
@@ -117,7 +128,7 @@ def validate(path: Path, *, expect_build: bool) -> int:
 def main() -> int:
     total = 0
     total += validate(ROOT / "deploy" / "portainer-stack.yml", expect_build=False)
-    total += validate(ROOT / "deploy" / "portainer-build-stack.yml", expect_build=True)
+    total += validate(ROOT / "portainer-build-stack.yml", expect_build=True)
 
     print()
     if total:
