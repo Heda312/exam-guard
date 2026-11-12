@@ -92,6 +92,7 @@ See `docs/DECISIONS.md` (D-1) for why the default is `none`.
 | `DEFAULT_EXAM_DURATION_MINUTES` | `90` | Default when creating an exam |
 | `COMMITMENT_VERSION` | `exam-integrity-v1` | Version stored with each accepted commitment |
 | `ALLOWED_EXAM_URL_HOSTS` | `docs.google.com,forms.gle,forms.google.com` | Allow-list for the exam form URL |
+| `LATE_JOIN_GRACE_SECONDS` | `60` | Joining later than this after the exam starts flags the participant as late. `0` flags everyone who joins after the start. Registration is never blocked |
 
 ## Monitoring
 

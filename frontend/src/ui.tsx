@@ -149,11 +149,20 @@ export function Stat({
   );
 }
 
+/**
+ * Every timestamp in the UI is rendered in Asia/Jakarta (WIB, UTC+7) regardless
+ * of the viewer's own timezone. Proctors and participants are all in Indonesia,
+ * and mixing browser-local time with the WIB exports caused confusion.
+ */
+export const APP_TIME_ZONE = "Asia/Jakarta";
+export const APP_TIME_ZONE_LABEL = "WIB";
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString("id-ID", {
+    timeZone: APP_TIME_ZONE,
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -162,11 +171,24 @@ export function formatDateTime(value: string | null | undefined): string {
   });
 }
 
+/** Same instant, but with an explicit "WIB" suffix for places where ambiguity matters. */
+export function formatDateTimeWib(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${formatDateTime(value)} ${APP_TIME_ZONE_LABEL}`;
+}
+
 export function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return date.toLocaleTimeString("id-ID", {
+    timeZone: APP_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 export function formatDuration(totalSeconds: number): string {

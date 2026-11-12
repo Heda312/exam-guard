@@ -109,6 +109,30 @@ def test_csv_report_export(admin_client: TestClient) -> None:
     assert "Alek Nurhabib" in text
     assert "commitment_accepted" in text
     assert "yes" in text
+    # The timezone must be documented and the timestamps must be WIB.
+    assert "Asia/Jakarta" in text
+    assert "WIB" in text
+
+
+def test_csv_timestamps_are_wib(admin_client: TestClient) -> None:
+    """Exports must show Asia/Jakarta time, not raw UTC."""
+    exam = create_exam(admin_client)
+    add_participant(admin_client, exam["id"], "Alek Nurhabib", npm="2021001")
+    register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
+    admin_client.post(f"/api/v1/exams/{exam['id']}/start")
+
+    text = admin_client.get(f"/api/v1/exams/{exam['id']}/report.csv").content.decode("utf-8")
+    header_line = next(line for line in text.splitlines() if line.startswith("exam_code"))
+    columns = header_line.split(",")
+    started_index = columns.index("started_at")
+
+    data_line = next(
+        line for line in text.splitlines() if "Alek Nurhabib" in line
+    )
+    started_value = data_line.split(",")[started_index]
+    # Format: "YYYY-MM-DD HH:MM:SS WIB"
+    assert started_value.endswith("WIB"), started_value
+    assert len(started_value.split(" ")) == 3, started_value
 
 
 def test_xlsx_report_export(admin_client: TestClient) -> None:
@@ -126,5 +150,7 @@ def test_xlsx_report_export(admin_client: TestClient) -> None:
     workbook = load_workbook(BytesIO(response.content))
     assert set(workbook.sheetnames) == {"Participants", "Incidents"}
     sheet = workbook["Participants"]
-    assert sheet["A1"].value == "exam_code"
-    assert sheet.max_row == 2
+    # Row 1 documents the timezone, row 2 is the header.
+    assert "Asia/Jakarta" in str(sheet["A1"].value)
+    assert sheet["A2"].value == "exam_code"
+    assert sheet.freeze_panes == "A3"

@@ -425,27 +425,25 @@ export default function ParticipantPage() {
                   type="text"
                   value={fullName}
                   onChange={(event) => setFullName(event.target.value)}
-                  placeholder="Sesuai nama pada roster"
+                  placeholder="Masukkan nama lengkap anda"
                   required
                   autoComplete="name"
                 />
                 <span className="hint">
-                  Nama dicocokkan dengan roster menggunakan normalisasi huruf besar/kecil dan spasi.
+                  Nama harus kapitalisasi tiap kata, contoh: "John Doe".
                 </span>
               </div>
 
               <div className="field">
-                <label htmlFor="npm">NPM (opsional)</label>
+                <label htmlFor="npm">NPM</label>
                 <input
                   id="npm"
                   type="text"
                   value={npm}
                   onChange={(event) => setNpm(event.target.value)}
+                  placeholder="Masukkan NPM anda"
                   autoComplete="off"
                 />
-                <span className="hint">
-                  NPM hanya bersifat informasi dan tidak digunakan untuk validasi identitas.
-                </span>
               </div>
 
               <div className="checkbox-row" style={{ marginBottom: 16 }}>
@@ -478,8 +476,8 @@ export default function ParticipantPage() {
               </button>
 
               <p className="small muted mt-16">
-                Dengan mendaftar, nama Anda dicocokkan dengan roster ujian. Bila identitas tidak
-                dapat diverifikasi, hubungi pengawas — bukan mengulang dengan nama lain.
+                Dengan mendaftar, nama Anda dicocokkan dengan database ujian. Bila identitas tidak
+                dapat diverifikasi, hubungi pengawas.
               </p>
             </form>
           ) : null}

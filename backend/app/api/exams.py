@@ -656,7 +656,7 @@ def export_report_csv(
     )
     db.commit()
     return Response(
-        content=reports.to_csv(rows),
+        content=reports.csv_timezone_note() + reports.to_csv(rows),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="examguard-{exam.exam_code}.csv"'

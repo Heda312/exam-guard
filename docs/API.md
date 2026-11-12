@@ -84,6 +84,21 @@ For a proctor, `exams` lists `{exam_id, permissions:{can_view_exam, …}}` and t
 `google_forms_url` must be HTTPS and on an allow-listed host
 (`ALLOWED_EXAM_URL_HOSTS`). `start` requires it to be set.
 
+### Timestamps and timezone
+
+All API timestamps are **UTC** in ISO-8601 (for example `2026-11-12T03:46:10Z`).
+Clients convert for display; the dashboard and the CSV/XLSX exports render
+**Asia/Jakarta (WIB, UTC+7)**.
+
+Exports make this explicit:
+
+- CSV starts with a `#` comment line naming the timezone, then the header row.
+  Values look like `2026-11-12 10:46:10 WIB`.
+- XLSX row 1 of every sheet carries the same note; row 2 is the header
+  (panes are frozen at `A3`).
+
+Consumers that parse the CSV should skip lines beginning with `#`.
+
 ---
 
 ## Roster

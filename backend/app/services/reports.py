@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..models import Exam, ExamParticipant, ExamSession, MonitoringEvent, ParticipantSession, ViolationIncident
 from ..services.exams import ensure_utc
 from ..services.monitoring import EVENT_SUMMARIES, incident_counts_for_exam_session
+from ..timeutil import format_wib
 
 REPORT_COLUMNS = [
     "exam_code",
@@ -36,10 +37,11 @@ REPORT_COLUMNS = [
 
 
 def _iso(value: Optional[datetime]) -> str:
-    if value is None:
-        return ""
-    value = ensure_utc(value)
-    return value.isoformat() if value else ""
+    """Export timestamps in Asia/Jakarta (WIB), not raw UTC.
+
+    Operators read these files directly, so they must match the dashboard.
+    """
+    return format_wib(value)
 
 
 def collect_rows(db: Session, exam: Exam) -> list[dict[str, str]]:
@@ -112,6 +114,18 @@ def to_csv(rows: Iterable[dict[str, str]]) -> str:
     return buffer.getvalue()
 
 
+def csv_timezone_note() -> str:
+    """Header comment documenting the timezone of every timestamp column.
+
+    Kept as a separate line so the CSV stays machine-parseable: consumers that
+    only want the table can skip lines starting with '#'.
+    """
+    return (
+        "# Semua kolom waktu menggunakan zona Asia/Jakarta (WIB, UTC+7). "
+        "Format: YYYY-MM-DD HH:MM:SS WIB\n"
+    )
+
+
 def incident_rows(db: Session, exam: Exam) -> list[dict[str, str]]:
     exam_session = db.scalar(
         select(ExamSession).where(ExamSession.exam_id == exam.id).order_by(ExamSession.created_at.desc())
@@ -155,8 +169,18 @@ def to_xlsx(rows: list[dict[str, str]], incident_rows_: list[dict[str, str]]) ->
     header_font = Font(color="FFFCF6", bold=True)
 
     def write_sheet(sheet, columns: list[str], data: list[dict[str, str]]) -> None:
+        # Row 1 documents the timezone of every *_at column, so the exported
+        # numbers are never misread as UTC.
+        sheet.append([f"Zona waktu: Asia/Jakarta (WIB, UTC+7) — format YYYY-MM-DD HH:MM:SS WIB"])
+        sheet.merge_cells(
+            start_row=1, start_column=1, end_row=1, end_column=max(len(columns), 1)
+        )
+        note_cell = sheet.cell(row=1, column=1)
+        note_cell.font = Font(bold=True, color="7A5112")
+        note_cell.alignment = Alignment(vertical="center")
+
         sheet.append(columns)
-        for cell in sheet[1]:
+        for cell in sheet[2]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(vertical="center")
@@ -165,7 +189,8 @@ def to_xlsx(rows: list[dict[str, str]], incident_rows_: list[dict[str, str]]) ->
         for index, column in enumerate(columns, start=1):
             longest = max([len(column)] + [len(str(row.get(column, ""))) for row in data] or [0])
             sheet.column_dimensions[get_column_letter(index)].width = min(max(12, longest + 2), 48)
-        sheet.freeze_panes = "A2"
+        # Freeze the note row and the header row.
+        sheet.freeze_panes = "A3"
 
     summary = workbook.active
     summary.title = "Participants"

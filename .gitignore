@@ -39,3 +39,4 @@ Thumbs.db
 # Backups
 *.dump
 /var/backups/
+*.zip

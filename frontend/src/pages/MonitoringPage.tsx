@@ -463,7 +463,7 @@ export default function MonitoringPage() {
           <h1>Pemantauan ujian</h1>
           <p>
             Status koneksi dan insiden aktivitas browser. Koneksi terputus tidak otomatis dianggap
-            kecurangan.
+            kecurangan. Semua waktu ditampilkan dalam <strong>WIB (UTC+7)</strong>.
           </p>
         </div>
         <div className="row">
@@ -819,7 +819,9 @@ export default function MonitoringPage() {
                   <tbody>
                     {detail.events.map((event) => (
                       <tr key={event.id}>
-                        <td className="mono small">{formatTime(event.received_at)}</td>
+                        <td className="mono small" title="WIB (UTC+7)">
+                          {formatTime(event.received_at)}
+                        </td>
                         <td>{EVENT_LABELS[event.event_type] ?? event.event_type}</td>
                         <td className="mono small muted">{event.page_host ?? "—"}</td>
                       </tr>
