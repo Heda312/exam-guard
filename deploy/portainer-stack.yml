@@ -111,8 +111,9 @@ services:
       api:
         condition: service_healthy
     ports:
-      # Host port only. Point Cloudflare Tunnel at http://127.0.0.1:${WEB_PORT}.
-      - "${WEB_PORT:-9200}:80"
+      # Host port only, bound to localhost (see nginx.conf.template real_ip
+      # notes). Point Cloudflare Tunnel at http://127.0.0.1:${WEB_PORT}.
+      - "127.0.0.1:${WEB_PORT:-9200}:80"
     environment:
       API_HOST: api
       API_PORT: "8000"

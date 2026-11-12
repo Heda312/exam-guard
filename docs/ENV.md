@@ -108,7 +108,11 @@ See `docs/DECISIONS.md` (D-1) for why the default is `none`.
 | Variable | Default | Description |
 |---|---|---|
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per IP + username |
-| `REGISTER_RATE_LIMIT_PER_MINUTE` | `20` | Per IP |
+| `REGISTER_RATE_LIMIT_PER_MINUTE` | `200` | Keyed per (IP, exam code) — the budget must cover a whole cohort registering in a burst behind one tunnel |
+| `DB_POOL_SIZE` | `10` | SQLAlchemy pool floor (WebSockets hold no connection) |
+| `DB_MAX_OVERFLOW` | `20` | Extra connections allowed during bursts |
+| `DB_POOL_TIMEOUT` | `10` | Seconds to wait for a pooled connection before failing |
+| `DB_POOL_RECYCLE` | `1800` | Recycle connections older than this many seconds |
 
 ## CORS
 

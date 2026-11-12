@@ -12,9 +12,23 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
-# Abuse protection for auth/registration endpoints.
+# --- Real client IP behind Cloudflare Tunnel -------------------------------
+# Every request arrives from cloudflared, so $remote_addr is the tunnel, not
+# the participant. Cloudflare overwrites CF-Connecting-IP at its edge and it
+# cannot be spoofed *through the tunnel* — provided the origin port is only
+# reachable from localhost (docker-compose binds 127.0.0.1:9200). Trust the
+# header only from those private sources; anything else keeps $remote_addr.
+set_real_ip_from 127.0.0.1;
+set_real_ip_from ::1;
+set_real_ip_from 10.0.0.0/8;
+set_real_ip_from 172.16.0.0/12;
+set_real_ip_from 192.168.0.0/16;
+real_ip_header CF-Connecting-IP;
+
+# Abuse protection. These are per real client IP now (see real_ip above).
+# register_zone: one exam cohort (80+ participants) may sign up in a burst.
 limit_req_zone $binary_remote_addr zone=auth_zone:10m rate=10r/m;
-limit_req_zone $binary_remote_addr zone=register_zone:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=register_zone:10m rate=200r/m;
 
 server {
     listen 80;
@@ -22,16 +36,13 @@ server {
 
     client_max_body_size 4m;
 
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
-    add_header Cross-Origin-Opener-Policy "same-origin" always;
-
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
 
+    # Security headers live in a snippet because nginx's add_header is NOT
+    # inherited by a location that declares its own add_header (the SPA
+    # fallback does). Every location that serves a response includes it.
     location = /healthz {
         access_log off;
         return 200 "ok\n";
@@ -45,8 +56,9 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # X-Forwarded-For is OVERWRITTEN, not appended: a client-supplied
+        # chain must never reach the app (ip spoofing / rate-limit bypass).
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
@@ -59,7 +71,7 @@ server {
     }
 
     location /api/v1/participant/register {
-        limit_req zone=register_zone burst=20 nodelay;
+        limit_req zone=register_zone burst=100 nodelay;
         proxy_pass http://examguard_api;
         include /etc/nginx/conf.d/proxy_common.inc;
     }
@@ -79,11 +91,21 @@ server {
         root /usr/share/nginx/html;
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
     }
 
     location /assets/ {
         root /usr/share/nginx/html;
         expires 1y;
         add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
     }
 }

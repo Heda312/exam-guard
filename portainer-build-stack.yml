@@ -117,7 +117,8 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${WEB_PORT:-9200}:80"
+      # Bound to localhost so the origin is only reachable through the tunnel.
+      - "127.0.0.1:${WEB_PORT:-9200}:80"
     environment:
       API_HOST: api
       API_PORT: "8000"

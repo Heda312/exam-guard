@@ -301,6 +301,25 @@ yang paling sering:
 The tunnel terminates TLS, so nginx serves plain HTTP on the host port
 (`WEB_PORT`, default `9200`).
 
+### Real client IP behind the tunnel
+
+Every request arrives at nginx from cloudflared, so the TCP peer address is
+always the tunnel — without extra configuration, per-IP rate limits would be
+shared by the whole exam room. nginx is therefore configured to restore the
+true client IP from `CF-Connecting-IP`:
+
+- `set_real_ip_from` covers localhost and RFC1918 ranges (the only sources that
+  can reach the origin, since the published port binds to `127.0.0.1`).
+- `real_ip_header CF-Connecting-IP` is set by Cloudflare at its edge and cannot
+  be spoofed *through the tunnel*.
+- `X-Forwarded-For` sent upstream is **overwritten** with the resolved client
+  IP (`$remote_addr` after real_ip), never appended — a spoofed client chain
+  cannot reach the app.
+
+This is why the compose files publish `"127.0.0.1:${WEB_PORT:-9200}:80"`:
+the origin must not be reachable from the network directly, or an attacker
+could bypass the tunnel and forge `CF-Connecting-IP`.
+
 `/etc/cloudflared/config.yml` on the host:
 
 ```yaml

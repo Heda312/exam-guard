@@ -145,7 +145,11 @@ def register(
     db: Db,
 ) -> ParticipantSessionOut:
     ip = client_ip(request) or "unknown"
-    allowed, retry_after = register_limiter.check(ip)
+    # Keyed per (IP, exam_code): a Cloudflare Tunnel presents every participant
+    # as the same origin IP, so a pure-IP key would throttle the whole room
+    # after 20 sign-ups. The exam code keeps abuse scoped per exam without
+    # letting one exam's traffic exhaust another exam's budget.
+    allowed, retry_after = register_limiter.check(f"{ip}|{payload.exam_code.strip().upper()}")
     if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

@@ -207,6 +207,25 @@ operation to that single participant session.
   WebSocket is attached,
 - never mutates `monitoring_events` or `audit_logs`.
 
+## 10b. Connection-pool discipline (capacity ≥ 80 participants)
+
+A WebSocket can live for the entire exam (hours), but pooled database
+connections are scarce. Both WebSocket handlers in `app/ws_routes.py` finish
+all database work during authentication, close the session, and only then enter
+the receive loop — a live socket holds **no** database connection. The pool
+(`app/database.py`, tunable via `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` /
+`DB_POOL_TIMEOUT`, defaults 10/20/10) is therefore sized for HTTP bursts:
+a cohort of 80+ registering at once plus heartbeats every 10 s.
+
+This is proven by `scripts/capacity_80_e2e.py`: with the pool deliberately
+shrunk to 5 connections, 60 participant sockets open in <0.4 s and heartbeats
+stay under 15 ms while every socket remains open. Under the pre-fix code the
+sockets would exhaust the pool and socket #6 would already fail.
+
+`API_WORKERS` must stay `1`: the WebSocket `ConnectionManager` and the
+in-process rate limiters live in one process's memory; multiple workers would
+split event fan-out between them.
+
 ## 11. Data minimisation
 
 - Event rows store `page_host` only; `page_url` is intentionally `NULL`.

@@ -92,8 +92,11 @@ class Settings(BaseSettings):
     )
 
     # --- Rate limiting ----------------------------------------------------
+    # register default: one exam room behind a Cloudflare Tunnel presents a
+    # single origin IP, so the key is (IP, exam_code) and the budget must cover
+    # a whole cohort registering in a burst (80+ sign-ups within a minute).
     login_rate_limit_per_minute: int = Field(default=10)
-    register_rate_limit_per_minute: int = Field(default=20)
+    register_rate_limit_per_minute: int = Field(default=200)
 
     # --- CORS -------------------------------------------------------------
     # Empty means "same origin as PUBLIC_BASE_URL" (see cors_origin_list).
