@@ -104,6 +104,7 @@ async function setBuffer(buffer) {
 /* ------------------------------------------------------------------ */
 
 async function updateBadge() {
+  await chrome.action.setTitle({ title: `Buka ExamGuard · Extension v${chrome.runtime.getManifest().version}` });
   const session = await readSession();
   const buffer = await getBuffer();
 
@@ -758,7 +759,11 @@ function renderOverlay(payload) {
   ].join(";");
   button.addEventListener("click", () => host.remove());
 
-  panel.append(icon, title, message, note, button);
+  const version = document.createElement("p");
+  version.textContent = `ExamGuard · Extension v${payload.version}`;
+  version.style.cssText = "font-size:11px;color:#69726b;margin:12px 0 0;text-align:center;";
+
+  panel.append(icon, title, message, note, button, version);
   shadow.append(panel);
   document.documentElement.appendChild(host);
 
@@ -774,7 +779,7 @@ async function showOverlay(tabId, kind, warning) {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: renderOverlay,
-      args: [overlayContent(kind, warning)],
+      args: [{ ...overlayContent(kind, warning), version: chrome.runtime.getManifest().version }],
     });
     return true;
   } catch {

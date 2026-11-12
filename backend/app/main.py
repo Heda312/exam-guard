@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from . import __version__
 from .api import admin_users, auth, exams, monitoring, participant
 from .config import settings
 from .database import create_all
@@ -46,7 +47,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{settings.app_name} API",
-        version="1.3.0",
+        version=__version__,
         description=(
             "ExamGuard — examination session & browser activity monitoring.\n\n"
             "Participant access is validated by Exam ID + normalized name against the "
@@ -91,13 +92,13 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:
-        return {"status": "ok", "app": settings.app_name, "version": "1.3.0", "env": settings.app_env}
+        return {"status": "ok", "app": settings.app_name, "version": __version__, "env": settings.app_env}
 
     @app.get("/api/v1/meta", tags=["meta"])
     def meta() -> dict:
         return {
             "app_name": settings.app_name,
-            "version": "1.3.0",
+            "version": __version__,
             "participant_identity_mode": settings.participant_identity_mode,
             "commitment_version": settings.commitment_version,
             "heartbeat_interval_seconds": settings.heartbeat_interval_seconds,

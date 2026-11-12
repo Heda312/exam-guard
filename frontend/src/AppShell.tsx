@@ -3,12 +3,14 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
 import { api, errorMessage } from "./api";
 import { Alert, Icon } from "./ui";
+import { version as webVersion } from "../package.json";
 
 export default function AppShell() {
   const { me, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [setupRequired, setSetupRequired] = useState(false);
+  const [apiVersion, setApiVersion] = useState("Memuat…");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -16,6 +18,12 @@ export default function AppShell() {
       .setupStatus()
       .then((status) => setSetupRequired(status.setup_required))
       .catch(() => setSetupRequired(false));
+  }, []);
+
+  useEffect(() => {
+    api.meta()
+      .then((meta) => setApiVersion(`v${meta.version}`))
+      .catch(() => setApiVersion("Tidak tersedia"));
   }, []);
 
   const isAdmin = me?.permissions.is_admin ?? false;
@@ -78,6 +86,10 @@ export default function AppShell() {
               <Icon name="logout" />
               Keluar
             </button>
+          </div>
+          <div className="sidebar-version" aria-label="Versi aplikasi">
+            <span>Web v{webVersion}</span>
+            <span>API {apiVersion}</span>
           </div>
         </div>
       </aside>

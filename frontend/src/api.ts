@@ -96,6 +96,7 @@ export interface SetupStatus {
 }
 
 export const api = {
+  meta: () => request<{ version: string }>("/meta"),
   setupStatus: () => request<SetupStatus>("/setup/status"),
   setup: (payload: { setup_secret: string; username: string; full_name: string; password: string }) =>
     request<import("./types").MeResponse>("/setup", { method: "POST", body: payload }),

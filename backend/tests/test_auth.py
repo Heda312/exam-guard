@@ -1,7 +1,25 @@
 """First-run setup, login, CSRF and RBAC (spec §3, §5.1)."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+from app import __version__
+
+
+def test_public_version_matches_release_files(client: TestClient) -> None:
+    root = Path(__file__).resolve().parents[2]
+    package = json.loads((root / "frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((root / "frontend/package-lock.json").read_text(encoding="utf-8"))
+    manifest = json.loads((root / "extension/manifest.json").read_text(encoding="utf-8"))
+    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == manifest["version"] == __version__
+    for path in ("/health", "/api/v1/meta"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json()["version"] == __version__
+    assert client.get("/api/openapi.json").json()["info"]["version"] == __version__
 
 
 def test_setup_status_requires_secret_configuration(client: TestClient) -> None:

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, errorMessage, participantApi, participantStore } from "../api";
 import type { ParticipantConfig, ParticipantSession, PublicExamInfo } from "../types";
 import { Alert, formatDuration, formatTime, participantStatusLabel } from "../ui";
+import { version as webVersion } from "../../package.json";
 
 type Phase = "form" | "waiting" | "exam";
 
@@ -133,6 +134,7 @@ export default function ParticipantPage() {
         | null;
       if (data?.source !== "examguard-extension" || data.type !== "extension_state") return;
       const payload = data.payload ?? {};
+      if (typeof payload.version === "string") setExtensionVersion(payload.version);
       setMonitoringState({
         monitoring: Boolean(payload.monitoring),
         buffered: Number(payload.buffered ?? 0),
@@ -467,6 +469,10 @@ export default function ParticipantPage() {
               </svg>
             </span>
             <span>ExamGuard</span>
+          </div>
+          <div className="participant-versions" aria-label="Versi aplikasi peserta">
+            <span>Web v{webVersion}</span>
+            <span>{extensionVersion ? `Extension v${extensionVersion}` : "Extension belum terdeteksi"}</span>
           </div>
           <div className="row-between">
             <div>
