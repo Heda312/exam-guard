@@ -88,7 +88,9 @@ services:
       EXPIRY_SWEEP_SECONDS: ${EXPIRY_SWEEP_SECONDS:-5}
       # --- rate limits ---
       LOGIN_RATE_LIMIT_PER_MINUTE: ${LOGIN_RATE_LIMIT_PER_MINUTE:-10}
-      REGISTER_RATE_LIMIT_PER_MINUTE: ${REGISTER_RATE_LIMIT_PER_MINUTE:-20}
+      # Cohort-sized: one exam room behind a tunnel shares a single origin IP,
+      # so the (IP, exam_code) budget must absorb 80+ sign-ups per minute.
+      REGISTER_RATE_LIMIT_PER_MINUTE: ${REGISTER_RATE_LIMIT_PER_MINUTE:-200}
       # --- runtime ---
       API_PORT: "8000"
       API_WORKERS: ${API_WORKERS:-1}

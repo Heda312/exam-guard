@@ -23,6 +23,10 @@ Setup (fresh DB, deliberately tiny pool):
 
 Then:
     python ../scripts/capacity_80_e2e.py http://127.0.0.1:8000
+
+If httpx raises ``InvalidURL: Invalid port`` on startup, a bare IPv6 entry
+(e.g. ``::1``) in the NO_PROXY environment variable is tripping its proxy
+resolver; run with ``NO_PROXY='*'`` to bypass proxy detection entirely.
 """
 from __future__ import annotations
 
