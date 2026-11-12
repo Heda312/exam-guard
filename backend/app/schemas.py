@@ -387,6 +387,13 @@ class MonitoringTimerOut(BaseModel):
     remaining_seconds: int = 0
 
 
+class ProctorPresence(BaseModel):
+    """A staff member currently holding a live dashboard socket for the exam."""
+
+    user_id: str
+    full_name: str
+
+
 class MonitoringStateOut(BaseModel):
     """Single payload for the live monitoring dashboard.
 
@@ -398,6 +405,7 @@ class MonitoringStateOut(BaseModel):
     incidents: list[IncidentOut]
     timer: MonitoringTimerOut
     server_time: datetime
+    proctors_online: list[ProctorPresence] = []
 
 
 # --- Dashboard -------------------------------------------------------------

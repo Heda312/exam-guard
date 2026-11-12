@@ -33,6 +33,7 @@ from ..schemas import (
     OverviewStats,
     ParticipantCard,
     ParticipantDetail,
+    ProctorPresence,
 )
 from ..services.exams import (
     ensure_utc,
@@ -287,6 +288,9 @@ def monitor_state(
         incidents=_incidents_for_exam_session(db, exam_session.id),
         timer=_timer_payload(exam, exam_session),
         server_time=utcnow(),
+        proctors_online=[
+            ProctorPresence(**viewer) for viewer in manager.exam_viewers(exam_session.id)
+        ],
     )
 
 

@@ -95,14 +95,19 @@ async def exam_socket(
             "ends_at": exam_session.ends_at,
             "remaining_seconds": time_remaining_seconds(exam_session),
         }
+        viewer = {"user_id": user.id, "full_name": user.full_name}
     finally:
         # The connection goes back to the pool before the (potentially
         # hours-long) receive loop starts.
         db.close()
 
     try:
-        await manager.connect_exam(exam_session_id, websocket)
+        await manager.connect_exam(exam_session_id, websocket, viewer=viewer)
         await _send(websocket, envelope("connected", connected))
+        await manager.send_to_exam(
+            exam_session_id,
+            envelope("proctor_presence", {"viewers": manager.exam_viewers(exam_session_id)}),
+        )
         try:
             while True:
                 message = await websocket.receive_text()
@@ -111,7 +116,12 @@ async def exam_socket(
         except WebSocketDisconnect:
             pass
         finally:
-            await manager.disconnect(websocket)
+            watched_exam_id = await manager.disconnect(websocket)
+            if watched_exam_id:
+                await manager.send_to_exam(
+                    watched_exam_id,
+                    envelope("proctor_presence", {"viewers": manager.exam_viewers(watched_exam_id)}),
+                )
     except Exception:  # noqa: BLE001 - never leak a traceback to the client
         logger.exception("Proctor socket failed")
         try:

@@ -2,12 +2,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errorMessage } from "../api";
 import { useAuth } from "../auth";
-import type { Exam, ExamTimer, Incident, ParticipantCard, ParticipantDetail } from "../types";
+import type { Exam, ExamTimer, Incident, ParticipantCard, ParticipantDetail, ProctorPresence } from "../types";
 import {
   Alert,
   ConnectionBadge,
   EmptyState,
   ExamStatusBadge,
+  Icon,
   LoadingBlock,
   formatDateTime,
   formatDuration,
@@ -89,7 +90,9 @@ function Countdown({ deadline }: { deadline: number | null }) {
 
 function ExamProgress({ timer, deadline }: { timer: ExamTimer | null; deadline: number | null }) {
   const [now, setNow] = useState(() => Date.now());
-  const active = Boolean(timer?.started_at && timer?.ends_at && deadline !== null);
+  const active = Boolean(
+    timer?.status === "LIVE" && timer?.started_at && timer?.ends_at && deadline !== null,
+  );
   useEffect(() => {
     if (!active) return;
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
@@ -151,10 +154,10 @@ const ParticipantTile = memo(function ParticipantTile({
             {card.full_name}
             {card.is_late ? (
               <span
-                className="badge badge-warning"
-                style={{ marginLeft: 6 }}
+                className="badge badge-warning late-flag"
                 title={`Bergabung ${formatRelative(card.joined_at, now)} setelah ujian dimulai`}
               >
+                <Icon name="timer" className="badge-icon" />
                 Terlambat
               </span>
             ) : null}
@@ -213,7 +216,7 @@ const ParticipantTile = memo(function ParticipantTile({
 
 export default function MonitoringPage() {
   const { examId } = useParams();
-  const { canManageExam } = useAuth();
+  const { canManageExam, me } = useAuth();
   const [exams, setExams] = useState<Exam[]>([]);
   const [selected, setSelected] = useState<string>(examId ?? "");
   const [cards, setCards] = useState<ParticipantCard[]>([]);
@@ -221,6 +224,7 @@ export default function MonitoringPage() {
   const [timer, setTimer] = useState<ExamTimer | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
   const [detail, setDetail] = useState<ParticipantDetail | null>(null);
+  const [proctorsOnline, setProctorsOnline] = useState<ProctorPresence[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -274,6 +278,7 @@ export default function MonitoringPage() {
         const state = await api.monitorState(selected);
         setCards(state.cards);
         setIncidents(state.incidents);
+        setProctorsOnline(state.proctors_online ?? []);
         applyTimer(state.timer);
         lastRefreshRef.current = Date.now();
         setError(null);
@@ -304,6 +309,7 @@ export default function MonitoringPage() {
     setSort("name");
     setPage(0);
     setDetail(null);
+    setProctorsOnline([]);
     setFlashes({});
     detailIdRef.current = null;
     seenIncidents.current = new Set();
@@ -480,8 +486,24 @@ export default function MonitoringPage() {
       }
 
       if (event === "exam_ended") {
+        // Stop the countdown immediately; the refresh confirms the final state.
         setDeadline(Date.now());
+        setTimer((previous) =>
+          previous
+            ? { ...previous, status: "COMPLETED", session_status: "COMPLETED", remaining_seconds: 0 }
+            : previous,
+        );
         scheduleRefresh(300);
+        return;
+      }
+
+      if (event === "proctor_presence") {
+        const viewers = Array.isArray(data.viewers) ? (data.viewers as ProctorPresence[]) : [];
+        setProctorsOnline(
+          viewers.filter(
+            (viewer) => typeof viewer?.user_id === "string" && typeof viewer?.full_name === "string",
+          ),
+        );
         return;
       }
 
@@ -584,7 +606,12 @@ export default function MonitoringPage() {
       if (event.key === "Escape") closeDetail();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
   }, [detail, closeDetail]);
 
   async function review(incident: Incident, status: string) {
@@ -606,6 +633,7 @@ export default function MonitoringPage() {
   const online = cards.filter((card) => card.online).length;
   const flagged = cards.filter((card) => card.incident_count > 0).length;
   const completed = cards.filter((card) => FINISHED_STATUSES.includes(card.status)).length;
+  const late = cards.filter((card) => card.is_late).length;
   const unreviewed = incidents.filter((incident) => incident.review_status === "UNREVIEWED").length;
 
   const visibleCards = useMemo(() => {
@@ -728,6 +756,12 @@ export default function MonitoringPage() {
               <span className="summary-label">Selesai</span>
               <strong className="mono">{completed}</strong>
             </div>
+            {late > 0 ? (
+              <div className="summary-chip is-warning" title="Peserta yang bergabung setelah ujian dimulai">
+                <span className="summary-label">Terlambat</span>
+                <strong className="mono">{late}</strong>
+              </div>
+            ) : null}
             <div className="summary-chip is-warning">
               <span className="summary-label">Pernah insiden</span>
               <strong className="mono">{flagged}</strong>
@@ -931,7 +965,7 @@ export default function MonitoringPage() {
 
       {detail ? (
         <div className="detail-backdrop" onClick={closeDetail}>
-          <aside
+          <div
             className="detail-panel"
             role="dialog"
             aria-modal="true"
@@ -1030,7 +1064,29 @@ export default function MonitoringPage() {
                 </ul>
               )}
             </div>
-          </aside>
+          </div>
+        </div>
+      ) : null}
+
+      {examSessionId && proctorsOnline.length > 0 ? (
+        <div
+          className="proctor-float"
+          role="status"
+          title="Proktor/admin yang sedang membuka pemantauan ujian ini"
+        >
+          <span className="proctor-float-dot" aria-hidden="true" />
+          <div className="proctor-float-text">
+            <span className="proctor-float-label">Proktor live</span>
+            <span className="proctor-float-names">
+              {proctorsOnline
+                .slice(0, 2)
+                .map((viewer) =>
+                  viewer.user_id === me?.user.id ? `${viewer.full_name} (Anda)` : viewer.full_name,
+                )
+                .join(", ")}
+              {proctorsOnline.length > 2 ? ` +${proctorsOnline.length - 2}` : ""}
+            </span>
+          </div>
         </div>
       ) : null}
 

@@ -249,6 +249,10 @@ def find_expired_sessions(db: Session, now: Optional[datetime] = None) -> list[E
 def time_remaining_seconds(session: ExamSession, now: Optional[datetime] = None) -> int:
     if session.ends_at is None:
         return 0
+    # A stopped/expired exam has no remaining time, even when the original
+    # deadline is still in the future (proctor ended the exam early).
+    if session.completed_at is not None or session.status in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}:
+        return 0
     now = now or utcnow()
     ends_at = ensure_utc(session.ends_at)
     return max(0, int((ends_at - now).total_seconds()))

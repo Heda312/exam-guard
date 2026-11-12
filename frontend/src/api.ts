@@ -10,11 +10,13 @@ const BASE = "/api/v1";
 export class ApiError extends Error {
   status: number;
   detail: unknown;
+  code: string | null;
 
-  constructor(status: number, detail: unknown) {
+  constructor(status: number, detail: unknown, code: string | null = null) {
     super(typeof detail === "string" ? detail : "Terjadi kesalahan pada permintaan.");
     this.status = status;
     this.detail = detail;
+    this.code = code;
   }
 }
 
@@ -286,7 +288,7 @@ export const participantApi = {
       } catch {
         /* ignore */
       }
-      throw new ApiError(response.status, detail);
+      throw new ApiError(response.status, detail, response.headers.get("X-Error-Code"));
     }
     const issued = response.headers.get("X-Participant-Token");
     const body = (await response.json()) as import("./types").ParticipantSession;

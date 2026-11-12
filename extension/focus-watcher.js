@@ -88,6 +88,8 @@
     }
   });
 
-  // Page is being unloaded/navigated: also a loss of the exam page.
-  window.addEventListener("pagehide", () => onHidden("page_hide"));
+  // No pagehide listener: a same-tab page move inside the exam form (multi-page
+  // Google Forms, Docs navigation) unloads this document too, and reporting that
+  // as focus loss flagged legitimate navigation as a violation. Leaving the exam
+  // host is already caught by the service worker's NAVIGATION/TAB_CLOSED events.
 })();

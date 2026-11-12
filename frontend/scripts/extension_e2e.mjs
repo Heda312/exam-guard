@@ -473,9 +473,7 @@ const endOverlay = await waitFor(
     participantPage.evaluate(() => {
       const host = document.getElementById("examguard-overlay-host");
       const text = host?.shadowRoot?.textContent ?? "";
-      return text.includes("Waktu ujian telah habis") || text.includes("Ujian telah berakhir")
-        ? text
-        : null;
+      return text.includes("Ujian telah selesai") ? text : null;
     }),
   15000,
   600,

@@ -94,7 +94,10 @@ def register_participant(
     # 3. Registration state.
     allowed, reason = registration_window_state(exam)
     if not allowed:
-        raise RegistrationError(reason, status_code=409, code="registration_closed")
+        # A finished exam is a normal outcome, not a registration failure: the
+        # participant page shows a friendly "exam completed" notice for it.
+        code = "exam_ended" if exam.status in {"COMPLETED", "CANCELLED"} else "registration_closed"
+        raise RegistrationError(reason, status_code=409, code=code)
 
     # 4/5. Normalize and match the roster by Exam ID + normalized name only.
     submitted_name = clean_display_name(payload.full_name)

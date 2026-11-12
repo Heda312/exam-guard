@@ -1,9 +1,11 @@
 /**
- * Verifies the two fixes that were reported broken:
+ * Verifies the focus/navigation fixes that were reported broken:
  *
  *  1. alt+tab on the exam tab is detected, creates a FOCUS_LOST incident and
  *     raises the red warning overlay when the participant returns
  *  2. the monitoring incident table shows the domain, not just the card
+ *  3. moving between pages inside docs.google.com (multi-page form / Docs
+ *     navigation) is NOT a violation
  *
  * The exam URL points at a local page that actually loads, because a Google
  * Forms URL cannot be fetched in this sandbox. The extension only cares about
@@ -235,6 +237,39 @@ check(
   Boolean(overlay && overlay.includes("Sepertinya anda kehilangan fokus")),
   overlay?.slice(0, 70) ?? "none",
 );
+
+/* ------------- In-form page move: NOT a violation (docs.google.com) --------- */
+const beforeNav = await adminPage.evaluate(async (examId) => {
+  const response = await fetch(`/api/v1/exams/${examId}/monitor/state`);
+  const state = await response.json();
+  return state.incidents?.length ?? 0;
+}, exam.id);
+
+// A multi-page Google Form / Docs page move navigates the same tab to another
+// docs.google.com URL. The old document reports hide/blur while unloading;
+// that must not open an incident or raise a warning.
+await participantPage.goto("https://docs.google.com/forms/d/e/focus-e2e-next/viewform", {
+  waitUntil: "networkidle2",
+});
+await sleep(3500);
+
+const afterNav = await adminPage.evaluate(async (examId) => {
+  const response = await fetch(`/api/v1/exams/${examId}/monitor/state`);
+  const state = await response.json();
+  return state.incidents?.length ?? 0;
+}, exam.id);
+check(
+  "pindah halaman sesama docs.google.com bukan pelanggaran",
+  afterNav === beforeNav,
+  `${beforeNav} -> ${afterNav}`,
+);
+
+const { worker: navWorker } = await findWorker();
+const navWarning = await navWorker.evaluate(async () => {
+  const { session } = await chrome.storage.local.get("session");
+  return session?.pendingWarning ?? null;
+});
+check("tidak ada peringatan baru setelah navigasi internal", navWarning === null);
 
 /* ------------------- Incident table shows the domain in UI ------------------ */
 await adminPage.goto(`${BASE}/monitoring/${exam.id}`, { waitUntil: "networkidle2" });

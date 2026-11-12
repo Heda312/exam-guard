@@ -11,7 +11,7 @@ import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, DefaultDict, Dict, Iterable, Set
+from typing import Any, DefaultDict, Dict, Iterable, Optional, Set
 
 from fastapi import WebSocket
 
@@ -28,6 +28,8 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._participants: Dict[str, Set[WebSocket]] = defaultdict(set)
         self._exams: Dict[str, Set[WebSocket]] = defaultdict(set)
+        # exam_session_id -> socket -> viewer identity (proctor/admin dashboard)
+        self._exam_viewers: DefaultDict[str, Dict[WebSocket, Dict[str, str]]] = defaultdict(dict)
         self._lock = asyncio.Lock()
 
     async def connect_participant(self, participant_session_id: str, websocket: WebSocket) -> None:
@@ -35,17 +37,30 @@ class ConnectionManager:
         async with self._lock:
             self._participants[participant_session_id].add(websocket)
 
-    async def connect_exam(self, exam_session_id: str, websocket: WebSocket) -> None:
+    async def connect_exam(
+        self,
+        exam_session_id: str,
+        websocket: WebSocket,
+        viewer: Optional[Dict[str, str]] = None,
+    ) -> None:
         await websocket.accept()
         async with self._lock:
             self._exams[exam_session_id].add(websocket)
+            if viewer is not None:
+                self._exam_viewers[exam_session_id][websocket] = viewer
 
-    async def disconnect(self, websocket: WebSocket) -> None:
+    async def disconnect(self, websocket: WebSocket) -> Optional[str]:
+        """Remove a socket; return the exam session id if it was a tracked viewer."""
         async with self._lock:
             for bucket in list(self._participants.values()):
                 bucket.discard(websocket)
             for bucket in list(self._exams.values()):
                 bucket.discard(websocket)
+            for exam_session_id, viewers in list(self._exam_viewers.items()):
+                if websocket in viewers:
+                    del viewers[websocket]
+                    return exam_session_id
+        return None
 
     async def _send_many(self, sockets: Iterable[WebSocket], payload: dict[str, Any]) -> None:
         message = json.dumps(payload, default=_json_default)
@@ -70,6 +85,13 @@ class ConnectionManager:
 
     def is_participant_connected(self, participant_session_id: str) -> bool:
         return self.participant_connection_count(participant_session_id) > 0
+
+    def exam_viewers(self, exam_session_id: str) -> list[Dict[str, str]]:
+        """Distinct staff identities currently holding a dashboard socket."""
+        distinct: Dict[str, Dict[str, str]] = {}
+        for viewer in self._exam_viewers.get(exam_session_id, {}).values():
+            distinct.setdefault(viewer["user_id"], viewer)
+        return list(distinct.values())
 
 
 manager = ConnectionManager()

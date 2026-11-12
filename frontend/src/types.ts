@@ -226,11 +226,17 @@ export interface ExamTimer {
   remaining_seconds: number;
 }
 
+export interface ProctorPresence {
+  user_id: string;
+  full_name: string;
+}
+
 export interface MonitoringState {
   cards: ParticipantCard[];
   incidents: Incident[];
   timer: ExamTimer;
   server_time: string;
+  proctors_online: ProctorPresence[];
 }
 
 export interface HeartbeatAck {

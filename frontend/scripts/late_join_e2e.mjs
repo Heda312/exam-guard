@@ -176,9 +176,13 @@ check(
 await admin.goto(`${BASE}/monitoring/${exam.id}`, { waitUntil: "networkidle2" });
 await admin.waitForSelector(".participant-card", { timeout: 20000 });
 await sleep(1500);
-const cardText = await admin.evaluate(
-  () => document.querySelector(".participant-card")?.innerText ?? "",
-);
+const cardText = await admin.evaluate(() => {
+  const card = document.querySelector(".participant-card");
+  // Tiles use content-visibility:auto; an offscreen tile has no rendered text,
+  // so bring it into view and read textContent instead of innerText.
+  card?.scrollIntoView({ block: "center" });
+  return card?.textContent ?? "";
+});
 check(
   "badge 'Terlambat' tampil di kartu peserta",
   cardText.includes("Terlambat"),

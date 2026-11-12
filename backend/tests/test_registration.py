@@ -69,9 +69,18 @@ def test_registration_closed_when_exam_completed(admin_client: TestClient) -> No
     add_participant(admin_client, exam["id"], "Alek Nurhabib")
     admin_client.post(f"/api/v1/exams/{exam['id']}/start")
     admin_client.post(f"/api/v1/exams/{exam['id']}/end")
-    status, body, _ = register_participant(admin_client, exam["exam_code"], "Alek Nurhabib")
-    assert status == 409
-    assert "berakhir" in body["detail"]
+    response = admin_client.post(
+        "/api/v1/participant/register",
+        json={
+            "exam_code": exam["exam_code"],
+            "full_name": "Alek Nurhabib",
+            "commitment_accepted": True,
+        },
+    )
+    assert response.status_code == 409
+    assert "berakhir" in response.json()["detail"]
+    # The page renders a friendly "exam completed" popup instead of a red error.
+    assert response.headers["X-Error-Code"] == "exam_ended"
 
 
 def test_registration_stays_open_while_exam_is_live(admin_client: TestClient) -> None:

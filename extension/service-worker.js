@@ -357,7 +357,7 @@ async function enqueueEvent(type, details = {}, options = {}) {
   const event = {
     client_event_id: newEventId(),
     event_type: type,
-    client_timestamp: new Date().toISOString(),
+    client_timestamp: details.clientTimestamp ?? new Date().toISOString(),
     tab_id: details.tabId ?? null,
     window_id: details.windowId ?? null,
     page_url: details.url ?? null,
@@ -421,6 +421,50 @@ function queueEvent(type, details = {}, options = {}) {
   const task = enqueueChain.then(() => enqueueEvent(type, details, options));
   enqueueChain = task.catch(() => undefined);
   return task;
+}
+
+/** Moving between pages inside the exam form (multi-page Google Forms, Docs
+ *  page moves) briefly hides/blurs the old document before the new one loads.
+ *  That is not "leaving the exam": hold page-reported focus losses for a short
+ *  grace window and cancel them when the exam tab navigates to an allowed exam
+ *  host. A real alt+tab produces no such navigation, so the loss still lands
+ *  (a quick return flushes it immediately, preserving event order). */
+const FORM_NAV_GRACE_MS = 1500;
+let pendingFocusLoss = null;
+let lastFormNavigationAt = 0;
+
+function cancelPendingFocusLoss() {
+  if (!pendingFocusLoss) return;
+  clearTimeout(pendingFocusLoss.timer);
+  pendingFocusLoss = null;
+}
+
+function scheduleFocusLoss(details) {
+  cancelPendingFocusLoss();
+  const at = new Date().toISOString();
+  const timer = setTimeout(() => {
+    pendingFocusLoss = null;
+    void (async () => {
+      await queueEvent("FOCUS_LOST", { ...details, clientTimestamp: at }, { priority: true });
+      const current = await readSession();
+      if (
+        current?.monitoring &&
+        current.pendingWarning &&
+        current.examTabId &&
+        (await isTabActive(current.examTabId))
+      ) {
+        await showPendingWarning(current.examTabId);
+      }
+    })();
+  }, FORM_NAV_GRACE_MS);
+  pendingFocusLoss = { timer, details, at };
+}
+
+async function flushPendingFocusLoss() {
+  if (!pendingFocusLoss) return;
+  const { details, at } = pendingFocusLoss;
+  cancelPendingFocusLoss();
+  await queueEvent("FOCUS_LOST", { ...details, clientTimestamp: at }, { priority: true });
 }
 
 async function flushOnce() {
@@ -529,6 +573,7 @@ async function startCapture() {
 async function stopMonitoring(reason = "manual") {
   const session = await readSession();
   if (!session) return null;
+  cancelPendingFocusLoss();
   await queueEvent("CONNECTION_LOST", { metadata: { reason } }, { priority: true });
   await flushEvents();
   await chrome.alarms.clear(FLUSH_ALARM);
@@ -544,6 +589,7 @@ async function stopMonitoring(reason = "manual") {
 async function handleExamEnded(status = "COMPLETED") {
   const session = await readSession();
   if (!session) return;
+  cancelPendingFocusLoss();
   if (session.ended && !session.monitoring) {
     await showOverlayOnExamTab(status === "TIME_EXPIRED" ? "time_up" : "ended");
     return;
@@ -591,10 +637,10 @@ function overlayContent(kind, warning) {
   }
   if (kind === "time_up") {
     return {
-      tone: "#b54745",
-      danger: true,
-      icon: "■",
-      title: "Waktu ujian telah habis",
+      tone: "#315c46",
+      danger: false,
+      icon: "✓",
+      title: "Ujian telah selesai",
       message: "Waktu pengerjaan telah habis. Pemantauan aktivitas browser dihentikan.",
       note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
       button: "Mengerti",
@@ -602,10 +648,10 @@ function overlayContent(kind, warning) {
     };
   }
   return {
-    tone: "#b54745",
-    danger: true,
-    icon: "■",
-    title: "Ujian telah berakhir",
+    tone: "#315c46",
+    danger: false,
+    icon: "✓",
+    title: "Ujian telah selesai",
     message: "Ujian telah diakhiri oleh pengawas. Pemantauan aktivitas browser dihentikan.",
     note: "Pastikan jawaban pada formulir sudah terkirim sebelum menutup tab ini.",
     button: "Mengerti",
@@ -798,6 +844,9 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   // Back on the exam tab: close the episode and surface the pending warning.
   if (session.examTabId && activeInfo.tabId === session.examTabId) {
+    // A quick switch back must not lose the pending loss: flush it first so the
+    // server sees FOCUS_LOST before FOCUS_RESTORED.
+    await flushPendingFocusLoss();
     await queueEvent(
       "FOCUS_RESTORED",
       {
@@ -871,7 +920,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   // Navigating inside the exam form (redirect, reload, page transition) is not
   // "leaving the exam"; only a navigation to another host is a violation.
-  if (!sameExamHost) {
+  if (sameExamHost) {
+    // The old document's hide/blur report for this page move is expected noise.
+    lastFormNavigationAt = Date.now();
+    cancelPendingFocusLoss();
+  } else {
+    await flushPendingFocusLoss();
     await queueEvent("NAVIGATION", {
       tabId,
       windowId: tab.windowId,
@@ -898,6 +952,7 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
     // Alt+tab / another app took over. Include the exam tab so the event is
     // attributable even when the page-level watcher did not fire.
+    await flushPendingFocusLoss();
     await queueEvent(
       "FOCUS_LOST",
       {
@@ -929,6 +984,7 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
     return;
   }
 
+  await flushPendingFocusLoss();
   await queueEvent("FOCUS_RESTORED", { metadata: { reason: "window_focus" } }, { priority: true });
   if (session.pendingWarning) {
     await showPendingWarning(session.examTabId);
@@ -1082,15 +1138,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // The exam page itself reported losing focus (alt+tab, another window,
         // another tab). This is the reliable path: chrome.windows.onFocusChanged
         // misses fast alt+tab because the service worker is often asleep.
-        await queueEvent(
-          "FOCUS_LOST",
-          {
-            tabId: session.examTabId ?? null,
-            url: message.payload?.url ?? session.googleFormsUrl ?? null,
-            metadata: { reason: message.payload?.reason ?? "page_blur" },
-          },
-          { priority: true },
-        );
+        // Right after an in-form page move the old document also reports a
+        // hide/blur; that one is suppressed, not a violation.
+        if (Date.now() - lastFormNavigationAt < FORM_NAV_GRACE_MS) {
+          sendResponse({ ok: true, suppressed: "form_navigation" });
+          break;
+        }
+        scheduleFocusLoss({
+          tabId: session.examTabId ?? null,
+          url: message.payload?.url ?? session.googleFormsUrl ?? null,
+          metadata: { reason: message.payload?.reason ?? "page_blur" },
+        });
         sendResponse({ ok: true });
         break;
       }
@@ -1100,6 +1158,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, reason: "not_monitoring" });
           break;
         }
+        // Flush any held loss first so a quick alt+tab-and-back still reaches
+        // the server in the right order (loss before restore).
+        await flushPendingFocusLoss();
         await queueEvent(
           "FOCUS_RESTORED",
           {
@@ -1109,9 +1170,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           },
           { priority: true },
         );
-        // Back on the exam page: surface any pending warning right away.
-        if (session.pendingWarning && session.examTabId) {
-          await showPendingWarning(session.examTabId);
+        // Back on the exam page: surface any pending warning right away. Re-read
+        // the session: the flushed loss may have just created the warning.
+        const current = await readSession();
+        if (current?.pendingWarning && current.examTabId) {
+          await showPendingWarning(current.examTabId);
         }
         sendResponse({ ok: true });
         break;

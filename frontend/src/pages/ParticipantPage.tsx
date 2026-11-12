@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { errorMessage, participantApi, participantStore } from "../api";
+import { useNavigate, useParams } from "react-router-dom";
+import { ApiError, errorMessage, participantApi, participantStore } from "../api";
 import type { ParticipantConfig, ParticipantSession, PublicExamInfo } from "../types";
 import { Alert, formatDuration, formatTime, participantStatusLabel } from "../ui";
 
-type Phase = "form" | "waiting" | "exam" | "finished";
+type Phase = "form" | "waiting" | "exam";
 
 /** Bridge to the ExamGuard Chrome extension (postMessage protocol). */
 function notifyExtension(type: string, payload: Record<string, unknown> = {}) {
@@ -13,6 +13,7 @@ function notifyExtension(type: string, payload: Record<string, unknown> = {}) {
 
 export default function ParticipantPage() {
   const { examCode: routeCode } = useParams();
+  const navigate = useNavigate();
   const [config, setConfig] = useState<ParticipantConfig | null>(null);
   const [examCode, setExamCode] = useState(routeCode ?? "");
   const [examInfo, setExamInfo] = useState<PublicExamInfo | null>(null);
@@ -34,14 +35,11 @@ export default function ParticipantPage() {
   const [warning, setWarning] = useState<{ type: string; count: number } | null>(null);
   const [endModal, setEndModal] = useState(false);
   const [endReason, setEndReason] = useState<"TIME_EXPIRED" | "COMPLETED">("TIME_EXPIRED");
+  const [endContext, setEndContext] = useState<"session" | "registration">("session");
   const heartbeatRef = useRef<number | null>(null);
   const refreshRef = useRef<() => void>(() => undefined);
   const examInfoRequestsRef = useRef(new Map<string, Promise<PublicExamInfo>>());
-
-  const isFinished = useMemo(
-    () => ["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session?.status ?? ""),
-    [session?.status],
-  );
+  const finishedNotifiedRef = useRef<string | null>(null);
 
   /** The proctor has started the exam; the participant now chooses when to open it. */
   const examOpened = useMemo(() => {
@@ -49,6 +47,49 @@ export default function ParticipantPage() {
     if (session.exam_status === "LIVE") return true;
     return ["INITIALIZING", "READY", "MONITORING"].includes(session.status);
   }, [session]);
+
+  /* ------------------------- Exam-finished flow ------------------------- */
+  /** The only end-of-exam path: tell the extension to stop, return to the
+   *  registration page, and show one friendly "ujian telah selesai" popup —
+   *  never a red error, never a lingering finished screen. */
+  function finishSession(target: ParticipantSession, reason: "TIME_EXPIRED" | "COMPLETED") {
+    setEndReason(reason);
+    setEndContext("session");
+    setEndModal(true);
+    if (finishedNotifiedRef.current === target.participant_session_id) return;
+    finishedNotifiedRef.current = target.participant_session_id;
+    notifyExtension("exam_ended", {
+      participantSessionId: target.participant_session_id,
+      status: reason,
+    });
+    participantStore.clear();
+    setSession(null);
+    setPhase("form");
+    setRemaining(null);
+    setWarning(null);
+    setError(null);
+    setExamInfo(null);
+    setExamCode("");
+    if (routeCode) navigate("/join", { replace: true });
+  }
+
+  /** Entering the Exam ID of an exam that is already over is a normal outcome,
+   *  not a registration error: show the same friendly notice. */
+  function showExamEndedNotice() {
+    setEndReason("COMPLETED");
+    setEndContext("registration");
+    setEndModal(true);
+    setExamInfo(null);
+    setError(null);
+    if (routeCode) navigate("/join", { replace: true });
+  }
+
+  function dismissEndModal() {
+    setEndModal(false);
+    setError(null);
+    setExamInfo(null);
+    setExamCode("");
+  }
 
   /* ---------------------------- Bootstrap ---------------------------- */
   useEffect(() => {
@@ -108,31 +149,42 @@ export default function ParticipantPage() {
     };
   }, [extensionDetected]);
 
-  // Resume an existing session on reload.
+  // Resume an existing session on reload. A session that is already over goes
+  // straight to the friendly finished notice + registration page.
   useEffect(() => {
     const storedId = participantStore.sessionId();
     if (!storedId) return;
     participantApi
       .session(storedId)
       .then((restored) => {
+        if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(restored.status)) {
+          finishSession(restored, restored.status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
+          return;
+        }
         setSession(restored);
         setPhase(resolvePhase(restored));
       })
       .catch(() => {
         participantStore.clear();
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const lookupExam = useCallback(async (code: string) => {
     if (!code.trim()) return;
     try {
       const info = await participantApi.publicExam(code.trim());
+      if (info.status === "COMPLETED" || info.status === "CANCELLED") {
+        showExamEndedNotice();
+        return;
+      }
       setExamInfo(info);
       setError(null);
     } catch (err) {
       setExamInfo(null);
       setError(errorMessage(err));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Recover duration metadata once per exam, including resumed sessions.
@@ -169,6 +221,10 @@ export default function ParticipantPage() {
 
   /* ---------------------------- Countdown ---------------------------- */
   const syncCountdown = useCallback((target: ParticipantSession) => {
+    if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(target.status)) {
+      setRemaining(0);
+      return;
+    }
     if (!target.ends_at) {
       setRemaining(null);
       return;
@@ -190,7 +246,7 @@ export default function ParticipantPage() {
 
   /* --------------------------- Heartbeats ---------------------------- */
   useEffect(() => {
-    if (!session || isFinished) return;
+    if (!session) return;
     const interval = Math.max(5, session.heartbeat_interval_seconds || 10) * 1000;
 
     async function beat() {
@@ -198,13 +254,7 @@ export default function ParticipantPage() {
       try {
         const ack = await participantApi.heartbeat(session.participant_session_id);
         if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(ack.status)) {
-          setEndReason(ack.status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
-          setEndModal(true);
-          notifyExtension("exam_ended", {
-            participantSessionId: session.participant_session_id,
-            status: ack.status,
-          });
-          void refreshRef.current();
+          finishSession(session, ack.status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
         }
       } catch {
         /* the server decides connection state; the client only retries */
@@ -216,12 +266,13 @@ export default function ParticipantPage() {
     return () => {
       if (heartbeatRef.current) window.clearInterval(heartbeatRef.current);
     };
-  }, [session, isFinished]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   /* ------------------- Participant realtime socket -------------------- */
   useEffect(() => {
     const participantSessionId = session?.participant_session_id;
-    if (!participantSessionId || isFinished) return;
+    if (!participantSessionId) return;
     const token = participantStore.token();
     let disposed = false;
     let pingTimer: number | null = null;
@@ -279,10 +330,9 @@ export default function ParticipantPage() {
         }
 
         if (frame.event === "time_expired" || frame.event === "exam_ended") {
-          setEndReason(frame.event === "time_expired" ? "TIME_EXPIRED" : "COMPLETED");
-          setEndModal(true);
-          notifyExtension("exam_ended", { participantSessionId });
-          void refreshRef.current();
+          if (session) {
+            finishSession(session, frame.event === "time_expired" ? "TIME_EXPIRED" : "COMPLETED");
+          }
           return;
         }
 
@@ -294,10 +344,8 @@ export default function ParticipantPage() {
           // not started yet reports remaining_seconds = 0 with ends_at = null;
           // that is the waiting room, not the end of the exam.
           const expired = endsAt !== null && seconds <= 0 && new Date(endsAt).getTime() <= Date.now();
-          if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(status) || expired) {
-            setEndReason(status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
-            setEndModal(true);
-            void refreshRef.current();
+          if ((["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(status) || expired) && session) {
+            finishSession(session, status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
           }
         }
       };
@@ -310,7 +358,8 @@ export default function ParticipantPage() {
       if (pingTimer) window.clearInterval(pingTimer);
       socket?.close();
     };
-  }, [session?.participant_session_id, isFinished]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.participant_session_id]);
 
   /* ------------------------ Registration flow ------------------------ */
   async function handleRegister(event: React.FormEvent) {
@@ -325,6 +374,7 @@ export default function ParticipantPage() {
         commitment_accepted: commitment,
         commitment_version: config?.commitment_version ?? null,
       });
+      finishedNotifiedRef.current = null;
       setSession(created);
       setPhase(resolvePhase(created));
       notifyExtension("session_registered", {
@@ -334,7 +384,11 @@ export default function ParticipantPage() {
         token: participantStore.token(),
       });
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && (err.code === "exam_ended" || err.code === "session_ended")) {
+        showExamEndedNotice();
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -344,6 +398,10 @@ export default function ParticipantPage() {
     if (!session) return;
     try {
       const updated = await participantApi.session(session.participant_session_id);
+      if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(updated.status)) {
+        finishSession(updated, updated.status === "COMPLETED" ? "COMPLETED" : "TIME_EXPIRED");
+        return;
+      }
       setSession(updated);
       setPhase(resolvePhase(updated));
       // Deliberately no automatic navigation: the participant must press
@@ -374,19 +432,10 @@ export default function ParticipantPage() {
   useEffect(() => {
     // `remaining` starts as null and is only 0 when a real deadline exists and
     // has passed; guard on ends_at so the waiting room never trips this.
-    if (remaining !== 0 || !session?.ends_at || !session || isFinished) return;
-    setEndReason("TIME_EXPIRED");
-    setEndModal(true);
-    notifyExtension("exam_ended", { participantSessionId: session.participant_session_id });
-    void refreshSession();
+    if (remaining !== 0 || !session?.ends_at || !session) return;
+    finishSession(session, "TIME_EXPIRED");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining]);
-
-  // Tell the extension when the exam is over so it stops capture and flushes.
-  useEffect(() => {
-    if (!isFinished || !session) return;
-    notifyExtension("exam_ended", { participantSessionId: session.participant_session_id });
-  }, [isFinished, session]);
 
   /* ------------------------------ Render ----------------------------- */
   return (
@@ -747,35 +796,6 @@ export default function ParticipantPage() {
             </div>
           ) : null}
 
-          {isFinished && session ? (
-            <div className="stack gap-16">
-              <div className="alert alert-success">
-                <div>
-                  <strong>Ujian selesai.</strong>
-                  <div className="small">
-                    Status akhir: {participantStatusLabel(session.status)}. Anda boleh menutup halaman ini.
-                  </div>
-                </div>
-              </div>
-              <div className="card" style={{ background: "rgba(220,231,217,0.35)" }}>
-                <div className="small muted">
-                  Pastikan formulir ujian sudah dikirim sebelum menutup tab. ExamGuard tidak dapat
-                  mengirimkan formulir atas nama Anda.
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => {
-                  participantStore.clear();
-                  setSession(null);
-                  setPhase("form");
-                }}
-              >
-                Selesai
-              </button>
-            </div>
-          ) : null}
         </div>
       </div>
 
@@ -816,37 +836,41 @@ export default function ParticipantPage() {
         </div>
       ) : null}
 
-      {endModal && session ? (
+      {endModal ? (
         <div
           className="modal-backdrop"
-          role="alertdialog"
+          role="dialog"
           aria-modal="true"
           aria-labelledby="exam_end_title"
         >
           <div className="modal-panel is-compact">
-            <div className="modal-icon is-danger" aria-hidden="true">
-              ■
+            <div className="modal-icon is-success" aria-hidden="true">
+              ✓
             </div>
             <h2 id="exam_end_title" className="modal-title">
-              {endReason === "TIME_EXPIRED" ? "Waktu ujian telah habis" : "Ujian telah berakhir"}
+              Ujian telah selesai
             </h2>
             <p className="small muted">
-              {endReason === "TIME_EXPIRED"
-                ? "Waktu pengerjaan telah habis. Sistem berhenti memantau aktivitas browser Anda."
-                : "Ujian telah diakhiri oleh pengawas. Sistem berhenti memantau aktivitas browser Anda."}
+              {endContext === "registration"
+                ? "Ujian dengan Exam ID ini sudah selesai, sehingga pendaftaran tidak dapat dilakukan lagi."
+                : endReason === "TIME_EXPIRED"
+                  ? "Waktu pengerjaan telah habis. Sistem berhenti memantau aktivitas browser Anda."
+                  : "Ujian telah diakhiri oleh pengawas. Sistem berhenti memantau aktivitas browser Anda."}
             </p>
-            <div className="alert alert-info">
-              <div className="small">
-                Pastikan jawaban pada formulir ujian sudah terkirim sebelum menutup tab ini.
-                ExamGuard tidak dapat mengirimkan formulir atas nama Anda.
+            {endContext === "session" ? (
+              <div className="alert alert-info">
+                <div className="small">
+                  Pastikan jawaban pada formulir ujian sudah terkirim sebelum menutup tab ini.
+                  ExamGuard tidak dapat mengirimkan formulir atas nama Anda.
+                </div>
               </div>
-            </div>
+            ) : null}
             <button
               type="button"
               className="btn btn-primary btn-block"
-              onClick={() => setEndModal(false)}
+              onClick={dismissEndModal}
             >
-              Mengerti
+              Kembali ke halaman pendaftaran
             </button>
           </div>
         </div>
@@ -860,7 +884,6 @@ function Steps({ phase }: { phase: Phase }) {
     { key: "form", label: "Verifikasi" },
     { key: "waiting", label: "Ruang tunggu" },
     { key: "exam", label: "Ujian" },
-    { key: "finished", label: "Selesai" },
   ];
   const activeIndex = steps.findIndex((step) => step.key === phase);
   return (
@@ -889,10 +912,10 @@ function Steps({ phase }: { phase: Phase }) {
 }
 
 function resolvePhase(session: ParticipantSession): Phase {
-  if (["COMPLETED", "TIME_EXPIRED", "CANCELLED"].includes(session.status)) return "finished";
   // INITIALIZING/READY means "exam opened, participant has not entered yet".
   // Keeping them in the waiting view is what shows the explicit "Buka ujian"
-  // button instead of navigating the tab behind their back.
+  // button instead of navigating the tab behind their back. Terminal statuses
+  // never reach this function: finishSession handles them first.
   if (["REGISTERED", "WAITING", "INITIALIZING", "READY"].includes(session.status)) return "waiting";
   return "exam";
 }
