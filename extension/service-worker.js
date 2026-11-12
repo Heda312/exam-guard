@@ -901,7 +901,10 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!changeInfo.url) return;
+  // Google Forms page transitions can reload formResponse without changing the URL.
+  const navigating = Boolean(changeInfo.url) || changeInfo.status === "loading";
+  const loaded = changeInfo.status === "complete";
+  if (!navigating && !loaded) return;
   const session = await readSession();
   if (!session?.monitoring) return;
   // Only the exam tab's navigations matter: leaving that tab is the violation.
@@ -910,7 +913,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!session.examTabId || tabId !== session.examTabId) return;
 
   const examHost = hostOf(session.googleFormsUrl ?? "");
-  const nextHost = hostOf(changeInfo.url);
+  const nextHost = hostOf(changeInfo.url ?? tab.url ?? "");
   // Google redirects forms.gle → docs.google.com; both are still the exam page.
   const googleFormHosts = new Set(["docs.google.com", "forms.google.com", "forms.gle"]);
   const sameExamHost = Boolean(
@@ -920,11 +923,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   // Navigating inside the exam form (redirect, reload, page transition) is not
   // "leaving the exam"; only a navigation to another host is a violation.
-  if (sameExamHost) {
+  if (navigating && sameExamHost) {
     // The old document's hide/blur report for this page move is expected noise.
     lastFormNavigationAt = Date.now();
     cancelPendingFocusLoss();
-  } else {
+  } else if (changeInfo.url && !sameExamHost) {
     await flushPendingFocusLoss();
     await queueEvent("NAVIGATION", {
       tabId,
@@ -936,12 +939,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   // Navigating back into the exam form is another "returned to the exam page"
   // moment, even though the tab never lost activation.
-  if (sameExamHost && session.pendingWarning) {
+  if (changeInfo.url && sameExamHost && session.pendingWarning) {
     await showPendingWarning(tabId);
   }
 
   // A reload or in-form navigation replaces the document, dropping the watcher.
-  if (sameExamHost && changeInfo.status === "complete" && session.monitoring) {
+  if (sameExamHost && loaded && session.monitoring) {
     await ensureFocusWatcher(tabId);
   }
 });
@@ -1135,6 +1138,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, reason: "not_monitoring" });
           break;
         }
+        if (sender.tab?.id !== session.examTabId || sender.frameId !== 0) {
+          sendResponse({ ok: false, reason: "not_exam_page" });
+          break;
+        }
         // The exam page itself reported losing focus (alt+tab, another window,
         // another tab). This is the reliable path: chrome.windows.onFocusChanged
         // misses fast alt+tab because the service worker is often asleep.
@@ -1156,6 +1163,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const session = await readSession();
         if (!session?.monitoring) {
           sendResponse({ ok: false, reason: "not_monitoring" });
+          break;
+        }
+        if (sender.tab?.id !== session.examTabId || sender.frameId !== 0) {
+          sendResponse({ ok: false, reason: "not_exam_page" });
           break;
         }
         // Flush any held loss first so a quick alt+tab-and-back still reaches
