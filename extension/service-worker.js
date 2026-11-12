@@ -232,6 +232,9 @@ function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
   } catch {
     return Promise.resolve(false);
   }
+  const googleFormHosts = new Set(["docs.google.com", "forms.google.com", "forms.gle"]);
+  const matchesExpectedHost = (host) =>
+    host === expectedHost || (googleFormHosts.has(expectedHost) && googleFormHosts.has(host));
 
   return new Promise((resolve) => {
     let settled = false;
@@ -252,7 +255,7 @@ function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
       } catch {
         host = "";
       }
-      finish(host === expectedHost);
+      finish(matchesExpectedHost(host));
     }
 
     const timer = setTimeout(async () => {
@@ -264,7 +267,7 @@ function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
         } catch {
           host = "";
         }
-        finish(host === expectedHost && tab.status === "complete");
+        finish(matchesExpectedHost(host) && tab.status === "complete");
       } catch {
         finish(false);
       }
@@ -283,7 +286,7 @@ function waitForExamForm(tabId, expectedUrl, timeoutMs = 45000) {
           } catch {
             host = "";
           }
-          if (host === expectedHost) finish(true);
+          if (matchesExpectedHost(host)) finish(true);
         }
       } catch {
         finish(false);

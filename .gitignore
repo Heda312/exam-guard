@@ -40,3 +40,6 @@ Thumbs.db
 *.dump
 /var/backups/
 *.zip
+.loadtest/
+.qoder-office-pptx-locks/
+~$*.pptx

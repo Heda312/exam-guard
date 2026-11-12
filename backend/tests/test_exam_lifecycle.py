@@ -1,7 +1,9 @@
 """Exam lifecycle, server-authoritative timer and expiry (spec §8, §12, §13)."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import threading
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -13,6 +15,44 @@ def test_exam_code_is_generated_when_omitted(admin_client: TestClient) -> None:
     exam = create_exam(admin_client, exam_code=None)
     assert exam["exam_code"].startswith("EXG-")
     assert exam["status"] == "REGISTRATION_OPEN"
+
+
+def test_concurrent_first_registration_reuses_one_exam_session(admin_client, monkeypatch):
+    from app.database import SessionLocal
+    from app.models import Exam, ExamSession
+    from app.services import exams
+
+    exam = create_exam(admin_client)
+    gate = threading.Barrier(10)
+    get_active = exams.get_active_exam_session
+
+    def synchronized_lookup(db, exam_id):
+        result = get_active(db, exam_id)
+        if not db.info.get('initial_lookup_done'):
+            db.info['initial_lookup_done'] = True
+            gate.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(exams, 'get_active_exam_session', synchronized_lookup)
+    with SessionLocal() as db:
+        original_updated_at = db.get(Exam, exam['id']).updated_at
+
+    def create_session(_):
+        with SessionLocal() as db:
+            row = db.get(Exam, exam['id'])
+            session = exams.get_or_create_exam_session(db, row)
+            db.commit()
+            return session.id
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        session_ids = list(executor.map(create_session, range(10)))
+    assert len(set(session_ids)) == 1
+    with SessionLocal() as db:
+        sessions = db.scalars(select(ExamSession).where(ExamSession.exam_id == exam['id'])).all()
+        assert len(sessions) == 1
+        assert sessions[0].started_at is None
+        assert sessions[0].ends_at is None
+        assert db.get(Exam, exam['id']).updated_at == original_updated_at
 
 
 def test_duplicate_exam_code_rejected(admin_client: TestClient) -> None:

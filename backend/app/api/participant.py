@@ -11,6 +11,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..audit import record_audit
 from ..config import settings
@@ -91,7 +92,10 @@ def _session_out(db: Session, ps: ParticipantSession) -> ParticipantSessionOut:
     if exam_session is not None and exam_session_expired(exam_session):
         messages.append("Waktu ujian telah berakhir.")
     payload["messages"] = messages
-    return ParticipantSessionOut(**payload)
+    result = ParticipantSessionOut(**payload)
+    # Release the connection before response validation can wait for a worker.
+    db.close()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +220,25 @@ def get_session(participant_session_id: str, db: Db, token: ParticipantToken = N
     return _session_out(db, ps)
 
 
+def _heartbeat_state(payload: ReconnectRequest, db: Session, token: Optional[str]) -> tuple[HeartbeatResponse, bool]:
+    ps = _authorize(db, payload.participant_session_id, token)
+    record_heartbeat(db, ps)
+    db.commit()
+
+    exam_session = db.get(ExamSession, ps.exam_session_id)
+    remaining = time_remaining_seconds(exam_session) if exam_session else 0
+    expired = exam_session_expired(exam_session)
+    notify_expired = expired and ps.status not in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}
+    result = HeartbeatResponse(
+        message=f"ok:{remaining}",
+        status="TIME_EXPIRED" if notify_expired else ps.status,
+        remaining_seconds=remaining,
+        ends_at=ensure_utc(exam_session.ends_at) if exam_session else None,
+    )
+    db.close()
+    return result, notify_expired
+
+
 @router.post("/heartbeat", response_model=HeartbeatResponse)
 async def heartbeat(payload: ReconnectRequest, db: Db, token: ParticipantToken = None) -> HeartbeatResponse:
     """Accept a liveness ping and tell the client exactly where the clock stands.
@@ -224,26 +247,13 @@ async def heartbeat(payload: ReconnectRequest, db: Db, token: ParticipantToken =
     keeping its own timer, and the participant page gets the same information
     over its WebSocket.
     """
-    ps = _authorize(db, payload.participant_session_id, token)
-    record_heartbeat(db, ps)
-    db.commit()
-
-    exam_session = db.get(ExamSession, ps.exam_session_id)
-    remaining = time_remaining_seconds(exam_session) if exam_session else 0
-    expired = exam_session_expired(exam_session)
-    effective_status = ps.status
-    if expired and ps.status not in {"COMPLETED", "TIME_EXPIRED", "CANCELLED"}:
-        effective_status = "TIME_EXPIRED"
+    result, notify_expired = await run_in_threadpool(_heartbeat_state, payload, db, token)
+    if notify_expired:
         await manager.send_to_participant(
-            ps.id,
-            envelope("time_expired", {"participant_session_id": ps.id, "status": "TIME_EXPIRED"}),
+            payload.participant_session_id,
+            envelope("time_expired", {"participant_session_id": payload.participant_session_id, "status": "TIME_EXPIRED"}),
         )
-    return HeartbeatResponse(
-        message=f"ok:{remaining}",
-        status=effective_status,
-        remaining_seconds=remaining,
-        ends_at=ensure_utc(exam_session.ends_at) if exam_session else None,
-    )
+    return result
 
 
 @router.post("/ready", response_model=ParticipantSessionOut)

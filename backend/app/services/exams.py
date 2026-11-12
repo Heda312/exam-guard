@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -139,6 +139,11 @@ def get_exam_session_for_exam(db: Session, exam: Exam) -> ExamSession:
 
 
 def get_or_create_exam_session(db: Session, exam: Exam) -> ExamSession:
+    session = get_active_exam_session(db, exam.id)
+    if session is not None:
+        return session
+    # A no-op row update serializes first-session creation on SQLite and PostgreSQL.
+    db.execute(update(Exam).where(Exam.id == exam.id).values(updated_at=Exam.updated_at))
     session = get_active_exam_session(db, exam.id)
     if session is not None:
         return session

@@ -19,6 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
 
 from .database import SessionLocal
 from .models import AuthSession, ExamProctor, ExamSession, ParticipantSession, User
@@ -47,34 +48,17 @@ def _auth_session_expired(auth: AuthSession) -> bool:
     return expires_at <= datetime.now(timezone.utc)
 
 
-@router.websocket("/ws/exam/{exam_session_id}")
-async def exam_socket(
-    websocket: WebSocket,
-    exam_session_id: str,
-    token: Optional[str] = Query(default=None),
-) -> None:
-    """Proctor monitoring socket. Auth via session cookie, then exam assignment."""
-    # Everything below is plain DB work: authenticate, authorize, snapshot the
-    # few fields the loop needs, and release the connection.
-    connected: Optional[dict] = None
-    db = SessionLocal()
-    try:
-        session_token = websocket.cookies.get("eg_session")
-        if not session_token:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
+def _exam_connection_data(session_token: Optional[str], exam_session_id: str) -> Optional[tuple[dict, dict]]:
+    if not session_token:
+        return None
+    with SessionLocal() as db:
         auth = db.scalar(select(AuthSession).where(AuthSession.token_hash == hash_token(session_token)))
-        # Revocation *and* expiry are both enforced here; the HTTP layer checks
-        # the same, and a dashboard left open overnight must not keep a valid
-        # socket after the session dies.
         if auth is None or auth.revoked_at is not None or _auth_session_expired(auth):
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
+            return None
         user = db.get(User, auth.user_id)
         exam_session = db.get(ExamSession, exam_session_id)
         if user is None or not user.is_active or exam_session is None:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
+            return None
         if user.role != "ADMIN":
             assignment = db.scalar(
                 select(ExamProctor).where(
@@ -84,10 +68,7 @@ async def exam_socket(
                 )
             )
             if assignment is None:
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                return
-
-        # Snapshot before closing the DB session.
+                return None
         connected = {
             "exam_session_id": exam_session_id,
             "status": exam_session.status,
@@ -95,11 +76,23 @@ async def exam_socket(
             "ends_at": exam_session.ends_at,
             "remaining_seconds": time_remaining_seconds(exam_session),
         }
-        viewer = {"user_id": user.id, "full_name": user.full_name}
-    finally:
-        # The connection goes back to the pool before the (potentially
-        # hours-long) receive loop starts.
-        db.close()
+        return connected, {"user_id": user.id, "full_name": user.full_name}
+
+
+@router.websocket("/ws/exam/{exam_session_id}")
+async def exam_socket(
+    websocket: WebSocket,
+    exam_session_id: str,
+    token: Optional[str] = Query(default=None),
+) -> None:
+    """Proctor monitoring socket. Auth via session cookie, then exam assignment."""
+    snapshot = await run_in_threadpool(
+        _exam_connection_data, websocket.cookies.get("eg_session"), exam_session_id
+    )
+    if snapshot is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    connected, viewer = snapshot
 
     try:
         await manager.connect_exam(exam_session_id, websocket, viewer=viewer)
@@ -130,6 +123,22 @@ async def exam_socket(
             pass
 
 
+def _participant_connection_data(participant_session_id: str, token: Optional[str]) -> Optional[dict]:
+    with SessionLocal() as db:
+        ps = db.get(ParticipantSession, participant_session_id)
+        if ps is None or not ps.access_token_hash:
+            return None
+        if not token or not constant_time_equals(hash_token(token), ps.access_token_hash):
+            return None
+        exam_session = db.get(ExamSession, ps.exam_session_id)
+        return {
+            "participant_session_id": participant_session_id,
+            "status": ps.status,
+            "ends_at": exam_session.ends_at if exam_session else None,
+            "remaining_seconds": time_remaining_seconds(exam_session) if exam_session else 0,
+        }
+
+
 @router.websocket("/ws/participant/{participant_session_id}")
 async def participant_socket(
     websocket: WebSocket,
@@ -137,26 +146,10 @@ async def participant_socket(
     token: Optional[str] = Query(default=None),
 ) -> None:
     """Participant socket. Auth via the participant token query parameter."""
-    connected: Optional[dict] = None
-    db = SessionLocal()
-    try:
-        ps = db.get(ParticipantSession, participant_session_id)
-        if ps is None or not ps.access_token_hash:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-        if not token or not constant_time_equals(hash_token(token), ps.access_token_hash):
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-
-        exam_session = db.get(ExamSession, ps.exam_session_id)
-        connected = {
-            "participant_session_id": participant_session_id,
-            "status": ps.status,
-            "ends_at": exam_session.ends_at if exam_session else None,
-            "remaining_seconds": time_remaining_seconds(exam_session) if exam_session else 0,
-        }
-    finally:
-        db.close()
+    connected = await run_in_threadpool(_participant_connection_data, participant_session_id, token)
+    if connected is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
     try:
         await manager.connect_participant(participant_session_id, websocket)

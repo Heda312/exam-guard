@@ -41,6 +41,9 @@ backend/tests
 backend/e2e_smoke.py
 backend/ws_smoke.py
 frontend/scripts
+.loadtest
+.qoder-office-pptx-locks
+*.pptx
 
 # OS noise
 .DS_Store
