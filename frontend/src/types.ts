@@ -174,6 +174,9 @@ export interface Incident {
   reviewed_at: string | null;
   notes: string | null;
   created_at: string;
+  /** Domain the participant had open when the episode started. */
+  page_host: string | null;
+  participant_name: string | null;
 }
 
 export interface ParticipantDetail extends ParticipantCard {

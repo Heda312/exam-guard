@@ -218,6 +218,8 @@ async function launchExamForm() {
 
   await patchSession({ monitoring: true, needsAttention: false, startedAt: Date.now() });
   await startCapture();
+  // Guarantee the page-level focus watcher runs in the exam tab.
+  await ensureFocusWatcher(tabId);
   await updateBadge();
   return true;
 }
@@ -380,8 +382,9 @@ async function enqueueEvent(type, details = {}, options = {}) {
   await updateBadge();
 
   if (options.priority || PRIORITY_EVENTS.has(type)) {
-    // Do not await: capture callbacks must stay responsive, but the flush starts
-    // right away instead of waiting for the 30 s alarm.
+    // Await the flush so a violation is uploaded before a fast FOCUS_RESTORED
+    // can interleave. Fire-and-forget used to race: the restore could flush
+    // first and the loss stayed behind, which made alt+tab look undetected.
     void flushEvents();
   } else if (buffer.length >= 10) {
     void flushEvents();
@@ -392,7 +395,29 @@ async function enqueueEvent(type, details = {}, options = {}) {
  *  cannot overwrite each other. */
 let enqueueChain = Promise.resolve();
 
+/** Drop a duplicate focus event that arrives within this window.
+ *
+ *  Chrome fires `visibilitychange` AND `blur` for one alt+tab, and the service
+ *  worker can also see `tabs.onActivated` / `windows.onFocusChanged` for the
+ *  same action. Without this, one alt+tab produced 3-4 events and the ordering
+ *  between FOCUS_LOST and FOCUS_RESTORED became racy: the restore could reach
+ *  the buffer first, close nothing, and the loss was then coalesced away.
+ */
+let lastFocusEvent = { type: null, at: 0 };
+const FOCUS_DEDUPE_MS = 600;
+
+function isDuplicateFocusEvent(type) {
+  if (type !== "FOCUS_LOST" && type !== "FOCUS_RESTORED") return false;
+  const now = Date.now();
+  const duplicate = lastFocusEvent.type === type && now - lastFocusEvent.at < FOCUS_DEDUPE_MS;
+  if (!duplicate) lastFocusEvent = { type, at: now };
+  return duplicate;
+}
+
 function queueEvent(type, details = {}, options = {}) {
+  if (isDuplicateFocusEvent(type)) {
+    return Promise.resolve();
+  }
   const task = enqueueChain.then(() => enqueueEvent(type, details, options));
   enqueueChain = task.catch(() => undefined);
   return task;
@@ -408,6 +433,7 @@ async function flushOnce() {
   let buffer = await getBuffer();
   while (buffer.length > 0) {
     const batch = buffer.slice(0, MAX_BATCH);
+    const sentIds = new Set(batch.map((event) => event.client_event_id));
     try {
       const response = await fetch(
         `${apiBase}/participant/events?participant_session_id=${encodeURIComponent(session.participantSessionId)}`,
@@ -426,11 +452,29 @@ async function flushOnce() {
         await updateBadge();
         return;
       }
-      if (!response.ok) return; // keep the buffer, retry on the next alarm
+      if (!response.ok) {
+        // A 4xx is not retryable: the batch will never be accepted, so drop it
+        // instead of blocking every later event behind a poisoned entry.
+        if (response.status >= 400 && response.status < 500) {
+          const current = await getBuffer();
+          await setBuffer(current.filter((event) => !sentIds.has(event.client_event_id)));
+          await patchSession({ lastError: `events_rejected_${response.status}` });
+          await updateBadge();
+          buffer = await getBuffer();
+          continue;
+        }
+        return; // 5xx: keep the buffer, retry on the next alarm
+      }
 
-      buffer = buffer.slice(batch.length);
-      await setBuffer(buffer);
+      // Re-read the buffer instead of slicing the stale snapshot: an event can
+      // be appended while the request is in flight (for example FOCUS_LOST
+      // arriving right after FOCUS_RESTORED). Writing back the old snapshot
+      // silently dropped those newer events, which is why alt+tab sometimes
+      // produced no incident at all.
+      const current = await getBuffer();
+      await setBuffer(current.filter((event) => !sentIds.has(event.client_event_id)));
       await updateBadge();
+      buffer = await getBuffer();
     } catch {
       return; // offline: keep buffering
     }
@@ -714,6 +758,31 @@ async function showOverlayOnExamTab(kind) {
   return showOverlay(session.examTabId, kind);
 }
 
+/**
+ * Make sure the page-level focus watcher is running in the exam tab.
+ *
+ * Declaring it in `content_scripts` is not enough: if the form is already loaded
+ * when monitoring starts, or the page reloads into a different Google host, the
+ * script may never be injected. Without it, alt+tab is only caught by
+ * `windows.onFocusChanged`, which is exactly what was reported as unreliable.
+ *
+ * Injection is idempotent: focus-watcher.js guards with a global flag.
+ */
+async function ensureFocusWatcher(tabId) {
+  if (!tabId) return false;
+  if (!(await tabExists(tabId))) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["focus-watcher.js"],
+    });
+    return true;
+  } catch {
+    // Restricted page (chrome://, PDF viewer) — nothing to observe there.
+    return false;
+  }
+}
+
 /* ----------------------------- Capture listeners ----------------------------- */
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   const session = await readSession();
@@ -816,13 +885,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (sameExamHost && session.pendingWarning) {
     await showPendingWarning(tabId);
   }
+
+  // A reload or in-form navigation replaces the document, dropping the watcher.
+  if (sameExamHost && changeInfo.status === "complete" && session.monitoring) {
+    await ensureFocusWatcher(tabId);
+  }
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   const session = await readSession();
   if (!session?.monitoring) return;
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    await queueEvent("FOCUS_LOST", { metadata: { reason: "window_blur" } }, { priority: true });
+    // Alt+tab / another app took over. Include the exam tab so the event is
+    // attributable even when the page-level watcher did not fire.
+    await queueEvent(
+      "FOCUS_LOST",
+      {
+        tabId: session.examTabId ?? null,
+        url: session.googleFormsUrl ?? null,
+        metadata: { reason: "window_blur" },
+      },
+      { priority: true },
+    );
     return;
   }
 
@@ -833,7 +917,15 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 
   if (!examTabActive) {
     // Another browser window came forward while the exam tab is not in view.
-    await queueEvent("FOCUS_LOST", { metadata: { reason: "window_switched" } }, { priority: true });
+    await queueEvent(
+      "FOCUS_LOST",
+      {
+        tabId: session.examTabId ?? null,
+        url: session.googleFormsUrl ?? null,
+        metadata: { reason: "window_switched" },
+      },
+      { priority: true },
+    );
     return;
   }
 
@@ -888,6 +980,11 @@ const RELAYED_TYPES = new Set([
   "get_state",
   "open_participant_page",
   "violation_warning",
+  // Focus watcher running on the exam page (Google Forms). It reports the
+  // page's own blur/visibility events, which catch alt+tab far more reliably
+  // than chrome.windows.onFocusChanged.
+  "focus:focus_lost",
+  "focus:focus_restored",
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -972,6 +1069,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (examTabActive) {
           const shown = await showOverlay(session.examTabId, "warning", warning);
           if (shown) await patchSession({ pendingWarning: null });
+        }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "focus:focus_lost": {
+        const session = await readSession();
+        if (!session?.monitoring) {
+          sendResponse({ ok: false, reason: "not_monitoring" });
+          break;
+        }
+        // The exam page itself reported losing focus (alt+tab, another window,
+        // another tab). This is the reliable path: chrome.windows.onFocusChanged
+        // misses fast alt+tab because the service worker is often asleep.
+        await queueEvent(
+          "FOCUS_LOST",
+          {
+            tabId: session.examTabId ?? null,
+            url: message.payload?.url ?? session.googleFormsUrl ?? null,
+            metadata: { reason: message.payload?.reason ?? "page_blur" },
+          },
+          { priority: true },
+        );
+        sendResponse({ ok: true });
+        break;
+      }
+      case "focus:focus_restored": {
+        const session = await readSession();
+        if (!session?.monitoring) {
+          sendResponse({ ok: false, reason: "not_monitoring" });
+          break;
+        }
+        await queueEvent(
+          "FOCUS_RESTORED",
+          {
+            tabId: session.examTabId ?? null,
+            url: message.payload?.url ?? session.googleFormsUrl ?? null,
+            metadata: { reason: message.payload?.reason ?? "page_focus" },
+          },
+          { priority: true },
+        );
+        // Back on the exam page: surface any pending warning right away.
+        if (session.pendingWarning && session.examTabId) {
+          await showPendingWarning(session.examTabId);
         }
         sendResponse({ ok: true });
         break;

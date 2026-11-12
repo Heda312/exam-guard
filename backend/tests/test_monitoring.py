@@ -82,6 +82,33 @@ def test_event_creates_incident(admin_client: TestClient) -> None:
     assert len(incidents) == 1
     assert incidents[0]["incident_type"] == "TAB_SWITCH"
     assert incidents[0]["review_status"] == "UNREVIEWED"
+    # The incident table shows the domain, so it must be exposed on the incident.
+    assert incidents[0]["page_host"] == "docs.google.com"
+    assert incidents[0]["participant_name"] == "Alek Nurhabib"
+
+
+def test_monitor_state_incidents_include_host_and_name(admin_client: TestClient) -> None:
+    """The live dashboard reads incidents from monitor/state, not /incidents."""
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+
+    admin_client.post(
+        f"/api/v1/participant/events?participant_session_id={ps_id}",
+        json=[
+            {
+                "client_event_id": "evt-host-1",
+                "event_type": "TAB_SWITCH",
+                "page_url": "https://chat.example.com/room/1",
+            }
+        ],
+        headers={"X-Participant-Token": token},
+    )
+
+    state = admin_client.get(f"/api/v1/exams/{exam['id']}/monitor/state").json()
+    assert len(state["incidents"]) == 1
+    incident = state["incidents"][0]
+    assert incident["page_host"] == "chat.example.com"
+    assert incident["participant_name"] == "Alek Nurhabib"
 
 
 def test_events_are_idempotent_by_client_event_id(admin_client: TestClient) -> None:

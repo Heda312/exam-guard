@@ -37,6 +37,16 @@
       "js": ["bridge.js"],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://docs.google.com/*",
+        "https://forms.google.com/*",
+        "https://forms.gle/*"
+      ],
+      "js": ["focus-watcher.js"],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ]
 }

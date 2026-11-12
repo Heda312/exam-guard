@@ -336,6 +336,11 @@ class IncidentOut(ORMModel):
     reviewed_at: Optional[datetime]
     notes: Optional[str]
     created_at: datetime
+    # Host the participant was on when the episode started. Derived from the
+    # latest event of the incident, so the incident table can show the domain
+    # instead of only the cards.
+    page_host: Optional[str] = None
+    participant_name: Optional[str] = None
 
 
 class IncidentReviewRequest(BaseModel):

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
-import type { Proctor } from "../types";
-import { Alert, EmptyState, LoadingBlock, formatDateTime } from "../ui";
+import type { Exam, Proctor } from "../types";
+import { Alert, EmptyState, LoadingBlock, ExamStatusBadge, formatDateTime } from "../ui";
 
 const DEFAULT_PERMISSIONS = {
   can_view_exam: true,
@@ -23,17 +23,23 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 export default function ProctorsPage() {
   const [proctors, setProctors] = useState<Proctor[]>([]);
+  const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [form, setForm] = useState({ full_name: "", username: "", password: "" });
   const [permissions, setPermissions] = useState({ ...DEFAULT_PERMISSIONS });
+  // Assigning right away avoids the "proctor exists but sees nothing" trap: an
+  // account with no exam assignment cannot open any exam, so it looks offline.
+  const [assignTo, setAssignTo] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   async function load() {
     setLoading(true);
     try {
-      setProctors(await api.listProctors());
+      const [proctorList, examList] = await Promise.all([api.listProctors(), api.listExams()]);
+      setProctors(proctorList);
+      setExams(examList);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -52,15 +58,54 @@ export default function ProctorsPage() {
     setError(null);
     setNotice(null);
     try {
-      await api.createProctor({
+      const proctor = await api.createProctor({
         full_name: form.full_name.trim(),
         username: form.username.trim(),
         password: form.password,
         permissions,
       });
+
+      // Assign the selected exams immediately. An unassigned proctor can log in
+      // but sees no exams at all, which reads as "not connected to the server".
+      const assigned: string[] = [];
+      for (const examId of assignTo) {
+        try {
+          await api.assignProctor(examId, {
+            proctor_user_id: proctor.id,
+            permissions: { ...permissions },
+          });
+          assigned.push(examId);
+        } catch (err) {
+          setError(errorMessage(err));
+        }
+      }
+
       setForm({ full_name: "", username: "", password: "" });
       setPermissions({ ...DEFAULT_PERMISSIONS });
-      setNotice("Akun proktor dibuat. Berikan username dan kata sandi kepada proktor.");
+      setAssignTo([]);
+      setNotice(
+        assigned.length > 0
+          ? `Akun proktor dibuat dan ditugaskan ke ${assigned.length} ujian. Berikan username dan kata sandi kepada proktor.`
+          : "Akun proktor dibuat, tetapi belum ditugaskan ke ujian mana pun. " +
+            "Tanpa penugasan, proktor tidak akan melihat ujian apa pun.",
+      );
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assignExam(proctor: Proctor, examId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.assignProctor(examId, {
+        proctor_user_id: proctor.id,
+        permissions: { ...DEFAULT_PERMISSIONS },
+      });
+      setNotice("Proktor ditugaskan ke ujian.");
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -179,6 +224,41 @@ export default function ProctorsPage() {
           </div>
           <fieldset style={{ border: "none", padding: 0, margin: "0 0 16px" }}>
             <legend className="small muted" style={{ marginBottom: 8 }}>
+              Tugaskan ke ujian (disarankan)
+            </legend>
+            {exams.length === 0 ? (
+              <p className="small muted">
+                Belum ada ujian. Buat ujian terlebih dahulu, lalu tugaskan proktor.
+              </p>
+            ) : (
+              <div className="row" style={{ flexWrap: "wrap", gap: 12 }}>
+                {exams.map((exam) => (
+                  <label key={exam.id} className="row small" style={{ gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={assignTo.includes(exam.id)}
+                      onChange={(event) =>
+                        setAssignTo((current) =>
+                          event.target.checked
+                            ? [...current, exam.id]
+                            : current.filter((id) => id !== exam.id),
+                        )
+                      }
+                    />
+                    <span className="mono">{exam.exam_code}</span>
+                    <span>{exam.name}</span>
+                    <ExamStatusBadge status={exam.status} />
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="small muted" style={{ marginTop: 8 }}>
+              Tanpa penugasan, proktor bisa masuk tetapi tidak melihat ujian apa pun — tampak
+              seperti tidak terhubung ke server.
+            </p>
+          </fieldset>
+          <fieldset style={{ border: "none", padding: 0, margin: "0 0 16px" }}>
+            <legend className="small muted" style={{ marginBottom: 8 }}>
               Izin default
             </legend>
             <div className="row">
@@ -236,10 +316,36 @@ export default function ProctorsPage() {
                         {proctor.is_active ? "Aktif" : "Nonaktif"}
                       </span>
                     </td>
-                    <td className="mono">{proctor.assigned_exam_count}</td>
+                    <td>
+                      {proctor.assigned_exam_count > 0 ? (
+                        <span className="mono">{proctor.assigned_exam_count}</span>
+                      ) : (
+                        <span className="badge badge-warning" title="Tanpa penugasan, proktor tidak melihat ujian apa pun">
+                          Belum ditugaskan
+                        </span>
+                      )}
+                    </td>
                     <td className="small muted">{formatDateTime(proctor.last_login_at)}</td>
                     <td className="text-right">
                       <div className="row" style={{ justifyContent: "flex-end" }}>
+                        {proctor.assigned_exam_count === 0 && exams.length > 0 ? (
+                          <select
+                            className="btn btn-sm"
+                            defaultValue=""
+                            onChange={(event) => {
+                              if (event.target.value) void assignExam(proctor, event.target.value);
+                            }}
+                            disabled={busy}
+                            aria-label={`Tugaskan ${proctor.username} ke ujian`}
+                          >
+                            <option value="">Tugaskan ke…</option>
+                            {exams.map((exam) => (
+                              <option key={exam.id} value={exam.id}>
+                                {exam.exam_code} · {exam.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"

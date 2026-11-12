@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import MonitoringEvent, ParticipantSession, ViolationIncident, utcnow
+from ..models import MonitoringEvent, Participant, ParticipantSession, ViolationIncident, utcnow
 from ..schemas import MonitoringEventIn
 
 # Which raw event types can open a behavioural incident.
@@ -253,3 +253,59 @@ def latest_incident_map(
     for incident in incidents:
         result.setdefault(incident.participant_session_id, incident)
     return result
+
+
+def incident_context_map(
+    db: Session, incident_ids: list[str]
+) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """Map incident -> (page host, participant full name) in two queries.
+
+    The incident table needs the domain the participant had open, but that lives
+    on ``monitoring_events``, not on the incident row. Doing it per incident
+    would reintroduce the N+1 pattern the dashboard just got rid of, so this
+    fetches the newest event host per incident in one grouped query and the
+    participant names in another.
+    """
+    if not incident_ids:
+        return {}
+
+    ranked = (
+        select(
+            MonitoringEvent.incident_id.label("incident_id"),
+            MonitoringEvent.page_host.label("page_host"),
+            func.row_number()
+            .over(
+                partition_by=MonitoringEvent.incident_id,
+                order_by=MonitoringEvent.received_at.desc(),
+            )
+            .label("row_number"),
+        )
+        .where(MonitoringEvent.incident_id.in_(incident_ids))
+        .subquery()
+    )
+    host_rows = db.execute(select(ranked).where(ranked.c.row_number == 1)).all()
+    hosts: dict[str, Optional[str]] = {
+        row.incident_id: row.page_host for row in host_rows
+    }
+
+    # Participant name per incident, joined through the participant session.
+    name_rows = db.execute(
+        select(
+            ViolationIncident.id.label("incident_id"),
+            Participant.full_name.label("full_name"),
+        )
+        .join(
+            ParticipantSession,
+            ParticipantSession.id == ViolationIncident.participant_session_id,
+        )
+        .join(Participant, Participant.id == ParticipantSession.participant_id)
+        .where(ViolationIncident.id.in_(incident_ids))
+    ).all()
+    names: dict[str, Optional[str]] = {
+        row.incident_id: row.full_name for row in name_rows
+    }
+
+    return {
+        incident_id: (hosts.get(incident_id), names.get(incident_id))
+        for incident_id in incident_ids
+    }

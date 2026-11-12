@@ -684,7 +684,9 @@ export default function MonitoringPage() {
               <thead>
                 <tr>
                   <th>Waktu</th>
+                  <th>Peserta</th>
                   <th>Jenis</th>
+                  <th>Domain</th>
                   <th>Jumlah event</th>
                   <th>Durasi</th>
                   <th>Tinjauan</th>
@@ -706,12 +708,15 @@ export default function MonitoringPage() {
                     <tr key={incident.id}>
                       <td>
                         <div className="mono small">{formatDateTime(incident.started_at)}</div>
-                        <div className="small muted">
-                          {participant?.full_name ?? "Peserta"} ·{" "}
-                          {formatRelative(incident.started_at, now)}
-                        </div>
+                        <div className="small muted">{formatRelative(incident.started_at, now)}</div>
+                      </td>
+                      <td>
+                        {incident.participant_name ?? participant?.full_name ?? "Peserta"}
                       </td>
                       <td>{EVENT_LABELS[incident.incident_type] ?? incident.incident_type}</td>
+                      <td className="mono small">
+                        {incident.page_host ?? "—"}
+                      </td>
                       <td className="mono">{incident.event_count}</td>
                       <td className="mono">{duration !== null ? formatDuration(duration) : "berlangsung"}</td>
                       <td>

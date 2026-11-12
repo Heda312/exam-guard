@@ -37,6 +37,7 @@ from ..schemas import (
 from ..services.exams import ensure_utc, get_active_exam_session, time_remaining_seconds
 from ..services.monitoring import (
     EVENT_SUMMARIES,
+    incident_context_map,
     incident_counts_for_exam_session,
     latest_event_map,
     latest_event_summary,
@@ -145,8 +146,9 @@ def _cards_for_exam_session(
     return cards
 
 
-def _incidents_for_exam_session(db: Session, exam_session_id: str) -> list[ViolationIncident]:
-    return list(
+def _incidents_for_exam_session(db: Session, exam_session_id: str) -> list[IncidentOut]:
+    """Incidents for an exam session, enriched with host and participant name."""
+    incidents = list(
         db.scalars(
             select(ViolationIncident)
             .join(ParticipantSession, ParticipantSession.id == ViolationIncident.participant_session_id)
@@ -154,6 +156,15 @@ def _incidents_for_exam_session(db: Session, exam_session_id: str) -> list[Viola
             .order_by(ViolationIncident.started_at.desc())
         ).all()
     )
+    context = incident_context_map(db, [incident.id for incident in incidents])
+    enriched: list[IncidentOut] = []
+    for incident in incidents:
+        payload = IncidentOut.model_validate(incident)
+        host, name = context.get(incident.id, (None, None))
+        payload.page_host = host
+        payload.participant_name = name
+        enriched.append(payload)
+    return enriched
 
 
 @router.get("/dashboard/overview", response_model=OverviewStats)
@@ -264,10 +275,7 @@ def monitor_state(
         )
     return MonitoringStateOut(
         cards=_cards_for_exam_session(db, exam, exam_session),
-        incidents=[
-            IncidentOut.model_validate(incident)
-            for incident in _incidents_for_exam_session(db, exam_session.id)
-        ],
+        incidents=_incidents_for_exam_session(db, exam_session.id),
         timer=_timer_payload(exam, exam_session),
         server_time=utcnow(),
     )
@@ -360,7 +368,15 @@ def list_incidents(
     if review_status:
         query = query.where(ViolationIncident.review_status == review_status)
     incidents = db.scalars(query).all()
-    return [IncidentOut.model_validate(incident) for incident in incidents]
+    context = incident_context_map(db, [incident.id for incident in incidents])
+    enriched: list[IncidentOut] = []
+    for incident in incidents:
+        payload = IncidentOut.model_validate(incident)
+        host, name = context.get(incident.id, (None, None))
+        payload.page_host = host
+        payload.participant_name = name
+        enriched.append(payload)
+    return enriched
 
 
 @router.patch("/incidents/{incident_id}", response_model=IncidentOut)
@@ -404,7 +420,11 @@ async def review_incident(
             },
         ),
     )
-    return IncidentOut.model_validate(incident)
+    result = IncidentOut.model_validate(incident)
+    host, name = incident_context_map(db, [incident.id]).get(incident.id, (None, None))
+    result.page_host = host
+    result.participant_name = name
+    return result
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])
