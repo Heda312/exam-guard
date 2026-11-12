@@ -6,9 +6,10 @@ See docs/ENV.md for the full reference.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
+from urllib.parse import quote
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,9 +27,18 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # --- Database ---------------------------------------------------------
+    # Empty means "assemble from the POSTGRES_* parts below, else use SQLite".
     # SQLite is used for local development, PostgreSQL in production.
-    database_url: str = Field(default="sqlite:///./data/examguard.db")
+    database_url: str = Field(default="")
     auto_create_tables: bool = Field(default=True)
+    # Optional: when DATABASE_URL is not given but these are, the DSN is
+    # assembled here with proper URL-encoding. This is the supported way to use
+    # a password containing @ / ? # % without breaking the connection string.
+    postgres_host: str = Field(default="db")
+    postgres_port: int = Field(default=5432)
+    postgres_db: str = Field(default="examguard")
+    postgres_user: str = Field(default="examguard")
+    postgres_password: str = Field(default="")
 
     # --- Secrets ----------------------------------------------------------
     secret_key: str = Field(default="change-me-in-production")
@@ -83,18 +93,48 @@ class Settings(BaseSettings):
     register_rate_limit_per_minute: int = Field(default=20)
 
     # --- CORS -------------------------------------------------------------
-    cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173,"
-        "https://exam.heda.my.id"
-    )
+    # Empty means "same origin as PUBLIC_BASE_URL" (see cors_origin_list).
+    cors_origins: str = Field(default="")
 
     # --- Runtime ----------------------------------------------------------
     expiry_sweep_seconds: int = Field(default=5)
 
     # --- Helpers ----------------------------------------------------------
+    @model_validator(mode="after")
+    def _assemble_database_url(self) -> "Settings":
+        """Build the PostgreSQL DSN from POSTGRES_* when DATABASE_URL is absent.
+
+        Docker Compose cannot nest ``${VAR}`` inside a default value, so the
+        compose file passes the parts separately and the URL is assembled (and
+        URL-encoded) here. This also makes passwords containing ``@ / ? # %``
+        work without manual escaping.
+        """
+        if self.database_url and self.database_url.strip():
+            return self
+        if not self.postgres_password:
+            # Nothing configured: keep the SQLite default used by local dev.
+            self.database_url = "sqlite:///./data/examguard.db"
+            return self
+        user = quote(self.postgres_user, safe="")
+        password = quote(self.postgres_password, safe="")
+        database = quote(self.postgres_db, safe="")
+        self.database_url = (
+            f"postgresql+psycopg://{user}:{password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{database}"
+        )
+        return self
+
     @field_validator("database_url")
     @classmethod
     def _normalize_sqlite_url(cls, value: str) -> str:
+        # A literal "${...}" means Compose failed to expand the value (usually a
+        # nested ${VAR:-...} in docker-compose.yml). Fail loudly instead of
+        # letting the entrypoint retry a malformed DSN for two minutes.
+        if "${" in value:
+            raise ValueError(
+                "DATABASE_URL berisi placeholder yang tidak diekspansi (${...}). "
+                "Periksa docker-compose.yml: jangan menaruh ${VAR} di dalam nilai default."
+            )
         if value.startswith("postgres://"):
             return value.replace("postgres://", "postgresql+psycopg://", 1)
         if value.startswith("postgresql://"):
@@ -112,7 +152,15 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> List[str]:
-        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+        """Explicit CORS_ORIGINS, else the public origin plus local dev hosts."""
+        configured = [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+        if configured:
+            return configured
+        origins = [self.public_base_url.rstrip("/")]
+        origins += ["http://localhost:5173", "http://127.0.0.1:5173"]
+        # Preserve order, drop duplicates.
+        seen: set[str] = set()
+        return [origin for origin in origins if not (origin in seen or seen.add(origin))]
 
     @property
     def allowed_exam_hosts(self) -> List[str]:

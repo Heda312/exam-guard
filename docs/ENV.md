@@ -25,7 +25,12 @@ process environment or a `.env` file. Booleans accept `true`/`false`/`1`/`0`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///./data/examguard.db` | `postgres://` and `postgresql://` are auto-normalized to `postgresql+psycopg://`. In Compose it defaults to the `POSTGRES_*` values; set it explicitly (URL-encoded) when the password contains `@`, `/`, `?` or `%` |
+| `DATABASE_URL` | *(empty)* | Full DSN. Leave empty to have it assembled from the `POSTGRES_*` parts below (recommended — the password is URL-encoded automatically). `postgres://` and `postgresql://` are normalized to `postgresql+psycopg://`. If empty and no `POSTGRES_PASSWORD`, falls back to SQLite |
+| `POSTGRES_HOST` | `db` | Compose service name of the database |
+| `POSTGRES_PORT` | `5432` | Database port |
+| `POSTGRES_DB` | `examguard` | Database name |
+| `POSTGRES_USER` | `examguard` | Database user |
+| `POSTGRES_PASSWORD` | *(empty)* | Database password. May contain `@ / ? # %` — it is URL-encoded when the DSN is assembled |
 | `AUTO_CREATE_TABLES` | `true` | Create tables at startup. The production container sets `false` and runs Alembic instead |
 | `RUN_MIGRATIONS` | `true` | Docker only: the entrypoint runs `alembic upgrade head` before starting |
 
@@ -101,7 +106,7 @@ See `docs/DECISIONS.md` (D-1) for why the default is `none`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per IP+email |
+| `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per IP + username |
 | `REGISTER_RATE_LIMIT_PER_MINUTE` | `20` | Per IP |
 
 ## CORS

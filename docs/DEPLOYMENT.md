@@ -261,12 +261,17 @@ The usual causes, in order of frequency:
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `Database tidak dapat dijangkau` | `db` is not ready, the password is wrong, or the `db_data` volume was created with a different password | check `docker compose logs db`; if the volume is stale and the data is disposable: `docker compose down -v && docker compose up -d --build` |
-| same, with `could not translate host name` / `invalid dsn` | `@`, `/`, `?` or `%` in `POSTGRES_PASSWORD` breaks the generated URL | use an alphanumeric password, or set `DATABASE_URL` in `.env` with a URL-encoded password |
+| `Konfigurasi tidak valid: … placeholder …` | `DATABASE_URL` contained a literal `${...}` — Compose does not expand `${VAR}` nested inside a default value | update `docker-compose.yml` (fixed in this release) or set `DATABASE_URL` explicitly in `.env` |
+| `Kesalahan permanen … password authentication failed` | `POSTGRES_PASSWORD` does not match the existing `db_data` volume | restore the old password, or `docker compose down -v` (deletes data) |
+| `Kesalahan permanen … database/role does not exist` | `POSTGRES_DB` / `POSTGRES_USER` mismatch | align `.env` with the volume, or recreate it |
+| `Kesalahan permanen … could not translate host name` | wrong service name or container not on the compose network | keep `POSTGRES_HOST=db` |
+| `Database tidak bisa dihubungi` after 120 s | `db` never became reachable (still starting, or resource-starved) | `docker compose logs db`, `docker compose ps` |
 | `GAGAL: migrasi database error` | a migration failed (usually a pre-existing/inconsistent schema) | read the alembic traceback; check `alembic current` / `alembic history` |
 | `BOOTSTRAP_ADMIN_PASSWORD ditolak` | first boot and the env password is < 10 chars or has no digit | set a valid `BOOTSTRAP_ADMIN_PASSWORD` (letters + digits), or empty both `BOOTSTRAP_ADMIN_USERNAME`/`PASSWORD` |
-| `Address already in use` | `API_PORT` conflicts inside the container network | leave `API_PORT=8000` unless you know why |
 | nothing after `Menjalankan API…` | uvicorn import/config error | the traceback is directly below that line |
+
+Permanent errors now abort in about a second instead of retrying for two
+minutes, so the failure is reported instead of leaving the container "Waiting".
 
 After fixing `.env`, recreate only the affected containers:
 

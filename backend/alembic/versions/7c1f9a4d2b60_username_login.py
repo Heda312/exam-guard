@@ -32,8 +32,13 @@ def _derive_username(email: str | None, user_id: str) -> str:
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_columns = {column["name"] for column in inspector.get_columns("users")}
+
     with op.batch_alter_table("users") as batch_op:
-        batch_op.add_column(sa.Column("username", sa.String(length=64), nullable=True))
+        if "username" not in existing_columns:
+            batch_op.add_column(sa.Column("username", sa.String(length=64), nullable=True))
         batch_op.alter_column("email", existing_type=sa.String(length=255), nullable=True)
 
     connection = op.get_bind()
@@ -54,12 +59,22 @@ def upgrade() -> None:
             {"username": candidate, "id": user_id},
         )
 
+    # Index names are not guaranteed to match between engines, so look them up.
+    inspector = sa.inspect(connection)
+    indexes = {index["name"]: index for index in inspector.get_indexes("users")}
+    email_index = indexes.get("ix_users_email")
+
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column("username", existing_type=sa.String(length=64), nullable=False)
-        batch_op.create_index("ix_users_username", ["username"], unique=True)
-        # Email is no longer the login identifier, so it must not be unique.
-        batch_op.drop_index("ix_users_email")
-        batch_op.create_index("ix_users_email", ["email"], unique=False)
+        if "ix_users_username" not in indexes:
+            batch_op.create_index("ix_users_username", ["username"], unique=True)
+        # Email is no longer the login identifier, so it must not stay unique.
+        if email_index is not None:
+            if email_index.get("unique"):
+                batch_op.drop_index("ix_users_email")
+                batch_op.create_index("ix_users_email", ["email"], unique=False)
+        else:
+            batch_op.create_index("ix_users_email", ["email"], unique=False)
 
 
 def downgrade() -> None:
