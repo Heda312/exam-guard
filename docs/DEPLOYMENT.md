@@ -1,10 +1,11 @@
 # Deployment
 
-Two supported profiles:
+Three supported profiles:
 
 1. **Docker Compose + PostgreSQL** — the production profile for
    `https://exam.heda.my.id`.
 2. **Local server `192.168.1.6`** — same compose file, reachable over LAN.
+3. **Portainer stack** — pulls prebuilt images from GHCR, no git clone needed.
 
 ---
 
@@ -94,7 +95,72 @@ BOOTSTRAP_ADMIN_PASSWORD=
 
 ---
 
-## 3. Cloudflare Tunnel
+## 3. Portainer (prebuilt images from GHCR)
+
+Use this when you manage containers through Portainer and do not want to clone
+the repository onto the host.
+
+Images are published automatically by `.github/workflows/publish-images.yml` on
+every push to `master`:
+
+```
+ghcr.io/heda312/exam-guard-api:latest
+ghcr.io/heda312/exam-guard-web:latest
+```
+
+Both are multi-arch (`linux/amd64` + `linux/arm64`), so they also run on Oracle
+Cloud ARM instances and Raspberry Pi.
+
+### Deploy
+
+1. **Stacks → Add stack**, name it `exam-guard`.
+2. **Build method: Web editor**, then paste `deploy/portainer-stack.yml`.
+3. Scroll to **Environment variables** and set at least:
+
+   | Variable | Example | Notes |
+   |---|---|---|
+   | `POSTGRES_PASSWORD` | `S3cretDbPass` | **Required.** Changing it later does not alter an existing volume |
+   | `SECRET_KEY` | output of `openssl rand -hex 32` | **Required.** Signs session cookies |
+   | `PUBLIC_BASE_URL` | `https://exam.heda.my.id` | Must match the browser origin |
+   | `BOOTSTRAP_ADMIN_USERNAME` | `heda` | Created on first boot only |
+   | `BOOTSTRAP_ADMIN_PASSWORD` | `WedhusGembel5` | Change after the first login |
+   | `COOKIE_SECURE` | `true` | `true` for HTTPS, `false` for plain LAN HTTP |
+   | `WEB_PORT` | `9200` | Host port; point Cloudflare Tunnel here |
+
+4. **Deploy the stack.**
+
+First boot takes a minute: the API waits for PostgreSQL, runs migrations, creates
+the administrator, then serves. Watch **Containers → exam-guard-api-1 → Logs**.
+
+### Private packages
+
+GHCR packages are private by default. Either make them public (GitHub → your
+profile → Packages → *exam-guard-api* → Package settings → Change visibility), or
+add a registry credential in Portainer:
+
+**Registries → Add registry → Custom registry**
+- URL: `https://ghcr.io`
+- Username: your GitHub username
+- Password: a PAT with the `read:packages` scope
+
+### Updating
+
+**Stacks → exam-guard → Pull and redeploy** (tick *Re-pull image*). Migrations run
+automatically on start.
+
+To pin a specific build instead of `latest`, set `IMAGE_TAG` to a tag produced by
+the workflow, for example `sha-8a48fbd` or `v1.4.0`.
+
+### Differences from `docker-compose.yml`
+
+| | `docker-compose.yml` | `deploy/portainer-stack.yml` |
+|---|---|---|
+| Build | builds from source | pulls prebuilt images |
+| Needs the repo | yes | no |
+| `API_PORT` | configurable | fixed at `8000` (internal only) |
+| Host port | `WEB_PORT` | `WEB_PORT` |
+
+---
 
 The tunnel terminates TLS, so nginx serves plain HTTP on the host port
 (`WEB_PORT`, default `9200`).
@@ -213,6 +279,8 @@ backup is the authoritative record.
 git pull
 docker compose up -d --build
 ```
+
+Portainer stacks: **Stacks → exam-guard → Pull and redeploy** instead.
 
 Migrations run automatically on start (the entrypoint runs `alembic upgrade
 head` before the API). To upgrade without migrations, set `RUN_MIGRATIONS=false`

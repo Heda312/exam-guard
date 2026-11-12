@@ -306,6 +306,40 @@ BOOTSTRAP_ADMIN_PASSWORD=
 
 `SETUP_DISABLED=true` (the default) keeps `/setup` permanently closed.
 
+### Portainer (prebuilt images, no clone)
+
+Images are published to GHCR on every push to `master`:
+
+```
+ghcr.io/heda312/exam-guard-api:latest
+ghcr.io/heda312/exam-guard-web:latest
+```
+
+Both are multi-arch (`amd64` + `arm64`).
+
+1. **Stacks → Add stack**, name it `exam-guard`.
+2. **Build method: Web editor** → paste `deploy/portainer-stack.yml`.
+3. Set the environment variables (Portainer prompts for them):
+
+   ```env
+   POSTGRES_PASSWORD=<strong-random-password>
+   SECRET_KEY=<openssl rand -hex 32>
+   PUBLIC_BASE_URL=https://exam.heda.my.id
+   BOOTSTRAP_ADMIN_USERNAME=heda
+   BOOTSTRAP_ADMIN_PASSWORD=WedhusGembel5
+   COOKIE_SECURE=true
+   WEB_PORT=9200
+   ```
+
+4. **Deploy the stack.** First boot takes ~1 minute (wait for PostgreSQL →
+   migrate → create admin → serve).
+
+If the GHCR packages are private, either make them public or add a Portainer
+registry credential (`https://ghcr.io` + a PAT with `read:packages`). See
+`docs/DEPLOYMENT.md` §3 for details, including how to pin `IMAGE_TAG`.
+
+Update later with **Stacks → exam-guard → Pull and redeploy**.
+
 ### Cloudflare Tunnel
 
 Point the tunnel at the published host port — no TLS setup, no certificate
@@ -476,7 +510,7 @@ cd backend
 pip install -r requirements-dev.txt    # once
 ```
 
-### Backend unit/integration — 85 tests
+### Backend unit/integration — 102 tests
 
 ```bash
 cd backend
@@ -489,14 +523,17 @@ touched.
 | File | Coverage |
 |---|---|
 | `test_names.py` | NFKC + casefold + whitespace, no fuzzy matching, NPM masking |
-| `test_auth.py` | first-run setup, single-use setup, login, CSRF, audit |
+| `test_auth.py` | first-run setup, single-use setup, username login, CSRF, audit |
 | `test_registration.py` | Exam-ID-only access, normalized match, typo rejection, NPM not a key, commitment, duplicate resume, ambiguous roster, rate limiting |
 | `test_exam_lifecycle.py` | code generation, URL validation, server deadline, start/end, expiry worker, disconnect ≠ cheating |
-| `test_monitoring.py` | readiness gating, token enforcement, incident correlation, idempotency, review audit |
+| `test_monitoring.py` | readiness gating, token enforcement, incident correlation, idempotency, review audit, monitor state bundle, heartbeat timer, no false expiry before start |
 | `test_rbac.py` | proctor scoping, per-permission denial, deactivation |
 | `test_roster_reports.py` | CSV preview/commit, duplicates, CSV/XLSX export |
+| `test_admin_deletes.py` | hard delete of roster entry / proctor / exam, cascades, live-exam guard |
 | `test_participant_payload.py` | NPM masking, no roster leakage, roster immutability |
 | `test_timestamps.py` | timezone-aware serialization (countdown regression guard) |
+| `test_bootstrap.py` | unattended admin bootstrap, default credentials, idempotency |
+| `test_config.py` | cookie domain, DSN assembly, unexpanded placeholder rejection, CORS fallback |
 
 ### Live API + WebSocket smoke tests
 
@@ -516,16 +553,35 @@ npm run typecheck     # tsc --noEmit
 npm run build         # production bundle
 ```
 
-### Extension (automated, 12 checks)
+### Browser E2E (automated)
 
 Loads the unpacked MV3 extension in Chromium and asserts the full participant
-flow: no popup, tab persistence, bridge detection, registration, same-tab
-navigation to the form, monitoring start, badge, and backend agreement.
+flow, plus dashboard and participant-page smoke tests.
 
 ```bash
 cd frontend
 npm install --no-save puppeteer-core
-CHROME_PATH="<path-to-chromium>" node scripts/extension_e2e.mjs http://127.0.0.1:5173
+CHROME_PATH="<path-to-chromium>" node scripts/extension_e2e.mjs   http://127.0.0.1:5173   # 27 checks
+CHROME_PATH="<path-to-chromium>" node scripts/dashboard_nav.mjs   http://127.0.0.1:5173 heda WedhusGembel5  # 13 checks
+CHROME_PATH="<path-to-chromium>" node scripts/dashboard_data.mjs  http://127.0.0.1:5173 heda WedhusGembel5  # 11 checks
+CHROME_PATH="<path-to-chromium>" node scripts/participant_flow.mjs http://127.0.0.1:5173 heda WedhusGembel5 # 7 checks
+```
+
+| Script | Covers |
+|---|---|
+| `extension_e2e.mjs` | no popup, tab persistence, bridge, registration, "Buka ujian" gate, same-tab form navigation, monitoring start, badge, realtime card, fast tab-switch incident, red focus overlay, time-up overlay |
+| `dashboard_nav.mjs` | username login, every page renders, SPA navigation, no console errors |
+| `dashboard_data.mjs` | create exam, detail/monitoring pages, every tab, delete from the UI |
+| `participant_flow.mjs` | no premature "exam ended" popup, no auto-redirect, "Ujian sudah dibuka" + button |
+
+### Deploy-level checks
+
+```bash
+python scripts/check_compose_interp.py        # Compose does not nest ${...}
+python scripts/check_db_error_classifier.py   # permanent vs transient DB errors
+python scripts/check_entrypoint_wait.py       # pre-flight fails fast, masks secrets
+python scripts/check_portainer_stack.py       # Portainer stack is valid
+python scripts/check_publish_workflow.py      # GHCR workflow builds both images
 ```
 
 ### Screenshots
