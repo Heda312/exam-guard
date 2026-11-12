@@ -340,6 +340,11 @@ registry credential (`https://ghcr.io` + a PAT with `read:packages`). See
 
 Update later with **Stacks → exam-guard → Pull and redeploy**.
 
+> **No images published yet?** GitHub Actions must build them. If it is blocked
+> by a billing issue, either push the images once from your machine
+> (`scripts/build-push-ghcr.ps1`) or use **Build method: Repository** with
+> `deploy/portainer-build-stack.yml` — Portainer then builds on the host.
+
 ### Cloudflare Tunnel
 
 Point the tunnel at the published host port — no TLS setup, no certificate

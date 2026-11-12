@@ -111,6 +111,13 @@ ghcr.io/heda312/exam-guard-web:latest
 Both are multi-arch (`linux/amd64` + `linux/arm64`), so they also run on Oracle
 Cloud ARM instances and Raspberry Pi.
 
+> **If the images do not exist yet:** the workflow needs GitHub Actions, which
+> fails with *"The job was not started because your account is locked due to a
+> billing issue"* when the account has a billing problem. In that case either
+> build the images once from your own machine
+> ([Publishing images manually](#publishing-images-manually)) or let Portainer
+> build from the repo ([Build from Git instead](#build-from-git-instead)).
+
 ### Deploy
 
 1. **Stacks → Add stack**, name it `exam-guard`.
@@ -159,6 +166,56 @@ the workflow, for example `sha-8a48fbd` or `v1.4.0`.
 | Needs the repo | yes | no |
 | `API_PORT` | configurable | fixed at `8000` (internal only) |
 | Host port | `WEB_PORT` | `WEB_PORT` |
+
+### Publishing images manually
+
+If GitHub Actions is unavailable (billing lock, no runner minutes), build and
+push the same images from any machine with Docker:
+
+```powershell
+# PowerShell (Windows)
+$env:GHCR_OWNER = "heda312"
+$env:GHCR_TOKEN = "<PAT with write:packages>"
+.\scripts\build-push-ghcr.ps1
+```
+
+```bash
+# bash (Linux/macOS)
+GHCR_OWNER=heda312 GHCR_TOKEN=<PAT> ./scripts/build-push-ghcr.sh
+
+# single architecture is much faster
+PLATFORMS=linux/amd64 GHCR_OWNER=heda312 GHCR_TOKEN=<PAT> ./scripts/build-push-ghcr.sh
+```
+
+The script logs in to `ghcr.io`, builds both images with buildx, and pushes them
+with the tag from `IMAGE_TAG` (default `latest`).
+
+Create the PAT at **GitHub → Settings → Developer settings → Personal access
+tokens** with the `write:packages` scope (a classic token). The first push
+creates the packages.
+
+After pushing, make the packages public (**GitHub → your profile → Packages →
+package → Package settings → Change visibility**) or add a Portainer registry
+credential so the stack can pull them.
+
+### Build from Git instead
+
+If you would rather not deal with a registry at all, Portainer can clone the repo
+and build the images on the host:
+
+**Stacks → Add stack → Build method: Repository**
+
+| Field | Value |
+|---|---|
+| Repository URL | `https://github.com/Heda312/exam-guard` |
+| Repository reference | `master` |
+| Compose path | `deploy/portainer-build-stack.yml` |
+
+Set the same environment variables as above, then **Deploy**. The first build
+takes a few minutes (`npm ci` + `pip install`) and needs ~2 GB free disk.
+
+Trade-offs: no registry, no `git pull` on the host, but every redeploy rebuilds
+and the images stay local to that Portainer instance.
 
 ---
 

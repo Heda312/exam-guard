@@ -1,0 +1,131 @@
+# =============================================================================
+# ExamGuard — Portainer stack that BUILDS from the Git repository
+#
+# Use this instead of portainer-stack.yml when the GHCR images are not published
+# yet (for example while GitHub Actions is blocked by a billing issue).
+#
+# Deploy from Portainer:
+#   Stacks → Add stack → Build method: Repository
+#     Repository URL : https://github.com/Heda312/exam-guard
+#     Repository ref : master
+#     Compose path   : deploy/portainer-build-stack.yml
+#
+# Then set the environment variables and Deploy. Portainer clones the repo onto
+# the host and builds both images there, so no registry is involved.
+#
+# Requirements: the Portainer host needs ~2 GB free disk and a few minutes for
+# the first build (npm install + pip install).
+# =============================================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-examguard}
+      POSTGRES_USER: ${POSTGRES_USER:-examguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-db-password}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-examguard} -d ${POSTGRES_DB:-examguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [examguard]
+
+  api:
+    # Build context is the repository root, so the relative paths inside
+    # Dockerfile (backend/, deploy/) resolve correctly.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: examguard-api:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      # --- database ---
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-examguard}
+      POSTGRES_USER: ${POSTGRES_USER:-examguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-db-password}
+      # Leave empty: the DSN is assembled from the values above.
+      DATABASE_URL: ${DATABASE_URL:-}
+      AUTO_CREATE_TABLES: "false"
+      RUN_MIGRATIONS: "true"
+      # --- secrets ---
+      SECRET_KEY: ${SECRET_KEY:-changeme-generate-with-openssl-rand-hex-32}
+      SETUP_SECRET: ${SETUP_SECRET:-}
+      SETUP_DISABLED: "true"
+      # --- initial administrator ---
+      BOOTSTRAP_ADMIN_ENABLED: ${BOOTSTRAP_ADMIN_ENABLED:-true}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-heda}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-WedhusGembel5}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      # --- public origin / cookies ---
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9200}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-720}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-10}
+      # --- participant identity ---
+      PARTICIPANT_IDENTITY_MODE: ${PARTICIPANT_IDENTITY_MODE:-none}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_ALLOWED_DOMAINS: ${GOOGLE_ALLOWED_DOMAINS:-}
+      # --- exam / monitoring ---
+      ALLOWED_EXAM_URL_HOSTS: ${ALLOWED_EXAM_URL_HOSTS:-docs.google.com,forms.gle,forms.google.com}
+      COMMITMENT_VERSION: ${COMMITMENT_VERSION:-exam-integrity-v1}
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-10}
+      HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-45}
+      INCIDENT_CORRELATION_MS: ${INCIDENT_CORRELATION_MS:-400}
+      EXPIRY_SWEEP_SECONDS: ${EXPIRY_SWEEP_SECONDS:-5}
+      # --- rate limits ---
+      LOGIN_RATE_LIMIT_PER_MINUTE: ${LOGIN_RATE_LIMIT_PER_MINUTE:-10}
+      REGISTER_RATE_LIMIT_PER_MINUTE: ${REGISTER_RATE_LIMIT_PER_MINUTE:-20}
+      # --- runtime ---
+      API_PORT: "8000"
+      API_WORKERS: ${API_WORKERS:-1}
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 180s
+      retries: 6
+    networks: [examguard]
+
+  web:
+    build:
+      context: ..
+      dockerfile: web.Dockerfile
+    image: examguard-web:local
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-9200}:80"
+    environment:
+      API_HOST: api
+      API_PORT: "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [examguard]
+
+volumes:
+  db_data:
+
+networks:
+  examguard:
+    driver: bridge
