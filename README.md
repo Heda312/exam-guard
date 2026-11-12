@@ -625,7 +625,7 @@ Architecture, state machines, and the realtime flow:
 | Symptom | Cause / fix |
 |---|---|
 | `/setup` says the setup secret is invalid | Local only: `SETUP_SECRET` in `backend/.env` differs from what you typed; restart the API after editing `.env` |
-| Cannot log in after `docker compose up` | Check `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` are set, then `docker compose logs api \| grep -i bootstrap` |
+| Cannot log in after `docker compose up` | First boot only: check `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD`, then `docker compose logs api \| grep -i bootstrap`. If the password worked before and now fails, it was changed in the UI — see "Wrong password after the first login worked" in docs/DEPLOYMENT.md, or reset with `backend/reset_password.py` |
 | `docker compose logs api` shows "Bootstrap admin tidak lengkap" | Only one of the two bootstrap variables is set — set both or neither |
 | Bootstrap password rejected | Policy requires ≥10 chars with letters **and** digits |
 | Login succeeds but every request returns 401 | `COOKIE_SECURE=true` while browsing over plain HTTP — set it to `false` |

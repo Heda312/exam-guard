@@ -493,6 +493,52 @@ Notes:
 - If the API is healthy but `web` is not, check `docker compose logs web` and
   `docker compose exec web nginx -t`.
 
+### "Wrong password" after the first login worked
+
+`Unauthorized` on login means the hash in the database does not match the value
+you typed. It does **not** mean the password changed by itself: the code never
+rotates hashes behind your back (verified by `scripts/repro_login_cycle.py`,
+which boots an app, logs in, logs out, logs in again and asserts the hash is
+stable).
+
+The usual sequence that causes it:
+
+1. First boot created `heda` with `BOOTSTRAP_ADMIN_PASSWORD`.
+2. The password was later **changed in the UI** (Akun → Ubah kata sandi), or a
+   second admin deleted/edited this account.
+3. `BOOTSTRAP_ADMIN_PASSWORD` in `.env` still holds the original value, so
+   logging in with it now fails.
+
+Bootstrap is deliberately one-shot: it never overwrites an existing admin, so
+editing the env var cannot "reset" the password after the first boot.
+
+#### Diagnose
+
+`scripts/diagnose_login.sh` runs inside the API container and prints which
+accounts exist, whether `BOOTSTRAP_ADMIN_PASSWORD` still matches the stored hash,
+and the recent login audit trail — without ever exposing a password:
+
+```bash
+docker cp scripts/diagnose_login.sh exam-guard-api-1:/tmp/diagnose.sh
+docker exec -it exam-guard-api-1 sh /tmp/diagnose.sh
+```
+
+Look at the audit log section: `auth.password_changed` entries tell you exactly
+when the password was rotated, and `auth.login_failed` shows the attempts.
+
+#### Reset the password
+
+`backend/reset_password.py` sets a new password for any staff account:
+
+```bash
+docker cp backend/reset_password.py exam-guard-api-1:/tmp/reset_password.py
+docker exec -it exam-guard-api-1 python /tmp/reset_password.py heda 'SandiBaruKuat99'
+```
+
+Omit the password argument to have a random 14-character one generated and
+printed once. The script refuses to run against an in-memory (test) database and
+shows which database it is touching before committing.
+
 ### Checking the API directly
 
 ```bash
