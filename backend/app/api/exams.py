@@ -155,7 +155,7 @@ def create_exam(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"exam_code": exam_code, "status": exam.status},
+        metadata={"exam_code": exam_code, "name": exam.name, "status": exam.status},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -237,6 +237,7 @@ def change_exam_status(
     except InvalidTransition as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    previous_status = exam.status
     exam.status = payload.status
     record_audit(
         db,
@@ -244,7 +245,7 @@ def change_exam_status(
         actor=user,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"from": exam.status, "to": payload.status},
+        metadata={"from": previous_status, "to": payload.status, "exam_code": exam.exam_code, "exam_name": exam.name},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -271,7 +272,7 @@ async def start_exam_endpoint(
         actor=user,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"exam_session_id": session.id, "duration_minutes": exam.duration_minutes},
+        metadata={"exam_session_id": session.id, "exam_code": exam.exam_code, "exam_name": exam.name, "duration_minutes": exam.duration_minutes},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -320,7 +321,7 @@ async def end_exam_endpoint(
         actor=user,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"exam_session_id": session.id},
+        metadata={"exam_session_id": session.id, "exam_code": exam.exam_code, "exam_name": exam.name},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -444,7 +445,7 @@ def add_roster_entry(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"participant_id": link.participant_id, "name": link.participant.full_name},
+        metadata={"name": link.participant.full_name},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -487,7 +488,7 @@ def edit_roster_entry(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"participant_id": link.participant_id, "changes": payload.model_dump(exclude_unset=True)},
+        metadata={"name": link.participant.full_name, "changes": payload.model_dump(exclude_unset=True)},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -524,7 +525,7 @@ def remove_roster_entry(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"participant_id": link.participant_id, "name": link.participant.full_name},
+        metadata={"name": link.participant.full_name},
         ip_address=client_ip(request),
     )
     delete_roster_entry(db, link)

@@ -325,7 +325,9 @@ export default function ProctorsPage() {
                         </span>
                       )}
                     </td>
-                    <td className="small muted">{formatDateTime(proctor.last_login_at)}</td>
+                    <td className="small muted">
+                      {proctor.last_login_at ? formatDateTime(proctor.last_login_at) : "Belum pernah masuk"}
+                    </td>
                     <td className="text-right">
                       <div className="row" style={{ justifyContent: "flex-end" }}>
                         {proctor.assigned_exam_count === 0 && exams.length > 0 ? (

@@ -418,7 +418,7 @@ async def review_incident(
         actor=user,
         resource_type="incident",
         resource_id=incident.id,
-        metadata={"review_status": payload.review_status},
+        metadata={"review_status": payload.review_status, "participant_name": ps.participant.full_name},
         ip_address=client_ip(request),
     )
     db.commit()

@@ -72,7 +72,7 @@ def create_proctor(
         actor=admin,
         resource_type="user",
         resource_id=proctor.id,
-        metadata={"username": username, "permissions": payload.permissions.model_dump()},
+        metadata={"username": username, "full_name": proctor.full_name, "permissions": payload.permissions.model_dump()},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -120,7 +120,7 @@ def update_proctor(
         actor=admin,
         resource_type="user",
         resource_id=proctor.id,
-        metadata=changes,
+        metadata={"proctor_name": proctor.full_name, "proctor_username": proctor.username, **changes},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -144,7 +144,7 @@ def delete_proctor(
         actor=admin,
         resource_type="user",
         resource_id=proctor.id,
-        metadata={"username": proctor.username},
+        metadata={"username": proctor.username, "full_name": proctor.full_name},
         ip_address=client_ip(request),
     )
     db.delete(proctor)
@@ -228,7 +228,7 @@ def assign_proctor(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"proctor_user_id": proctor.id, "permissions": payload.permissions.model_dump()},
+        metadata={"proctor_name": proctor.full_name, "proctor_username": proctor.username, "permissions": payload.permissions.model_dump()},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -270,7 +270,7 @@ def update_assignment(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"proctor_user_id": assignment.proctor_user_id, "permissions": payload.permissions.model_dump()},
+        metadata={"proctor_name": proctor.full_name, "proctor_username": proctor.username, "permissions": payload.permissions.model_dump()},
         ip_address=client_ip(request),
     )
     db.commit()
@@ -297,6 +297,7 @@ def remove_assignment(
     assignment = db.get(ExamProctor, assignment_id)
     if assignment is None or assignment.exam_id != exam.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Penugasan tidak ditemukan.")
+    proctor = assignment.proctor
     db.delete(assignment)
     record_audit(
         db,
@@ -304,7 +305,7 @@ def remove_assignment(
         actor=admin,
         resource_type="exam",
         resource_id=exam.id,
-        metadata={"proctor_user_id": assignment.proctor_user_id},
+        metadata={"proctor_name": proctor.full_name, "proctor_username": proctor.username},
         ip_address=client_ip(request),
     )
     db.commit()

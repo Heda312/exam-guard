@@ -11,7 +11,7 @@ from ..audit import record_audit
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_session, get_current_user, require_csrf
-from ..models import AppSetting, AuthSession, ExamProctor, User
+from ..models import AppSetting, AuthSession, ExamProctor, User, utcnow
 from ..ratelimit import RateLimitExceeded, SlidingWindowRateLimiter
 from ..schemas import (
     ChangePasswordRequest,
@@ -242,7 +242,7 @@ def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Akun Anda tidak aktif.")
 
     session = _issue_session(db, request, response, user)
-    user.last_login_at = session.created_at
+    user.last_login_at = utcnow()
     login_limiter.reset(key)
     record_audit(
         db,
@@ -278,8 +278,6 @@ def logout(
     session: Annotated[AuthSession, Depends(get_current_session)],
     db: Annotated[Session, Depends(get_db)],
 ) -> MessageResponse:
-    from ..models import utcnow
-
     session.revoked_at = utcnow()
     user = db.get(User, session.user_id)
     record_audit(db, action="auth.logout", actor=user)

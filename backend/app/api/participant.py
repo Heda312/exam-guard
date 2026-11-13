@@ -195,6 +195,7 @@ def register(
     record_audit(
         db,
         action="participant.registered",
+        actor_label=payload.full_name,
         resource_type="participant_session",
         resource_id=ps.id,
         metadata={"exam_code": payload.exam_code.upper(), "resumed": resumed},

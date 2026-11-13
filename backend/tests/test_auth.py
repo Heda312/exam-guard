@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app import __version__
+from app.models import User
 
 
 def test_public_version_matches_release_files(client: TestClient) -> None:
@@ -14,7 +18,9 @@ def test_public_version_matches_release_files(client: TestClient) -> None:
     package = json.loads((root / "frontend/package.json").read_text(encoding="utf-8"))
     lock = json.loads((root / "frontend/package-lock.json").read_text(encoding="utf-8"))
     manifest = json.loads((root / "extension/manifest.json").read_text(encoding="utf-8"))
-    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == manifest["version"] == __version__
+    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == __version__
+    # The extension ships on its own release line; only its format is checked here.
+    assert re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"])
     for path in ("/health", "/api/v1/meta"):
         response = client.get(path)
         assert response.status_code == 200
@@ -138,3 +144,29 @@ def test_audit_log_records_failed_login(client: TestClient, admin_client: TestCl
     assert len(logs.json()) >= 1
     # Passwords must never be logged.
     assert "SalahBanget123" not in logs.text
+
+
+def test_login_records_last_login(admin_client: TestClient, db: Session) -> None:
+    me = admin_client.get("/api/v1/auth/me").json()
+    assert me["user"]["last_login_at"] is None
+    response = admin_client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "AdminRahasia123"},
+    )
+    assert response.status_code == 200
+    assert response.json()["user"]["last_login_at"] is not None
+    assert db.scalar(select(User.last_login_at).where(User.username == "admin")) is not None
+
+
+def test_failed_login_does_not_record_last_login(admin_client: TestClient, db: Session) -> None:
+    created = admin_client.post(
+        "/api/v1/admin/proctors",
+        json={"username": "lista", "full_name": "Lista", "password": "Lista123456"},
+    )
+    assert created.status_code == 201, created.text
+    response = admin_client.post(
+        "/api/v1/auth/login",
+        json={"username": "lista", "password": "SalahBanget123"},
+    )
+    assert response.status_code == 401
+    assert db.scalar(select(User.last_login_at).where(User.username == "lista")) is None

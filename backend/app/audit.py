@@ -22,7 +22,7 @@ def record_audit(
 ) -> AuditLog:
     entry = AuditLog(
         actor_user_id=actor.id if actor else None,
-        actor_label=actor_label or (actor.email if actor else None),
+        actor_label=actor_label or (actor.username if actor else None),
         action=action,
         resource_type=resource_type,
         resource_id=resource_id,

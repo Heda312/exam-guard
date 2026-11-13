@@ -13,8 +13,10 @@ const ACTION_LABELS: Record<string, string> = {
   "proctor.created": "Proktor dibuat",
   "proctor.updated": "Proktor diperbarui",
   "proctor.deactivated": "Proktor dinonaktifkan",
+  "proctor.deleted": "Proktor dihapus",
   "exam.created": "Ujian dibuat",
   "exam.updated": "Ujian diperbarui",
+  "exam.deleted": "Ujian dihapus",
   "exam.started": "Ujian dimulai",
   "exam.ended": "Ujian diakhiri",
   "exam.status_changed": "Status ujian diubah",
@@ -30,6 +32,68 @@ const ACTION_LABELS: Record<string, string> = {
   "incident.reviewed": "Insiden ditinjau",
   "report.exported": "Laporan diekspor",
 };
+
+const RESOURCE_LABELS: Record<string, string> = {
+  exam: "Ujian",
+  user: "Akun",
+  participant_session: "Sesi peserta",
+  incident: "Insiden",
+};
+
+const METADATA_LABELS: Record<string, string> = {
+  exam_code: "Kode ujian",
+  exam_name: "Nama ujian",
+  name: "Nama",
+  full_name: "Nama lengkap",
+  username: "Username",
+  proctor_name: "Proktor",
+  proctor_username: "Username proktor",
+  participant_name: "Peserta",
+  permissions: "Izin",
+  changes: "Perubahan",
+  reason: "Alasan",
+  role: "Peran",
+  from: "Dari",
+  to: "Ke",
+  status: "Status",
+  review_status: "Status tinjauan",
+  imported: "Diimpor",
+  skipped: "Dilewati",
+  rows: "Baris",
+  format: "Format",
+  resumed: "Sesi dilanjutkan",
+  password_reset: "Reset sandi",
+  is_active: "Aktif",
+  exam_session_id: "ID sesi ujian",
+  duration_minutes: "Durasi (menit)",
+};
+
+const PERMISSION_LABELS: Record<string, string> = {
+  can_view_exam: "lihat ujian",
+  can_view_participants: "lihat peserta",
+  can_start_exam: "mulai ujian",
+  can_end_exam: "akhiri ujian",
+  can_review_incidents: "tinjau insiden",
+  can_export_report: "ekspor laporan",
+};
+
+function metadataText(key: string, value: unknown): string {
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (key === "permissions") {
+      const granted = Object.entries(record)
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => PERMISSION_LABELS[name] ?? name);
+      return granted.length > 0 ? granted.join(", ") : "tidak ada";
+    }
+    return Object.entries(record)
+      .map(([name, inner]) => `${METADATA_LABELS[name] ?? name}: ${metadataText(name, inner)}`)
+      .join("; ");
+  }
+  if (typeof value === "boolean") return value ? "ya" : "tidak";
+  if (value === null || value === undefined) return "—";
+  return String(value);
+}
 
 export default function AuditPage() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -48,11 +112,17 @@ export default function AuditPage() {
   const filtered = logs.filter((log) => {
     if (!filter.trim()) return true;
     const needle = filter.trim().toLowerCase();
-    return (
-      log.action.toLowerCase().includes(needle) ||
-      (log.actor_label ?? "").toLowerCase().includes(needle) ||
-      (log.resource_type ?? "").toLowerCase().includes(needle)
-    );
+    const haystack = [
+      log.action,
+      ACTION_LABELS[log.action] ?? "",
+      log.actor_label ?? "",
+      log.resource_type ?? "",
+      log.resource_id ?? "",
+      JSON.stringify(log.metadata_json ?? {}),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(needle);
   });
 
   return (
@@ -67,7 +137,7 @@ export default function AuditPage() {
         </div>
         <input
           type="search"
-          placeholder="Cari aksi, aktor, atau resource…"
+          placeholder="Cari aksi, aktor, nama, atau ID…"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           aria-label="Cari audit log"
@@ -104,14 +174,33 @@ export default function AuditPage() {
                       <div className="small muted mono">{log.action}</div>
                     </td>
                     <td className="small">{log.actor_label ?? "—"}</td>
-                    <td className="small mono muted">
-                      {log.resource_type ? `${log.resource_type}` : "—"}
-                      {log.resource_id ? ` · ${log.resource_id.slice(0, 8)}` : ""}
+                    <td className="small">
+                      {log.resource_type ? (
+                        <>
+                          <div>{RESOURCE_LABELS[log.resource_type] ?? log.resource_type}</div>
+                          {log.resource_id ? (
+                            <div className="mono muted" style={{ wordBreak: "break-all" }}>
+                              {log.resource_id}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
-                    <td className="small mono muted" style={{ maxWidth: 260, wordBreak: "break-word" }}>
-                      {Object.keys(log.metadata_json ?? {}).length > 0
-                        ? JSON.stringify(log.metadata_json)
-                        : "—"}
+                    <td className="small" style={{ maxWidth: 300 }}>
+                      {Object.keys(log.metadata_json ?? {}).length === 0 ? (
+                        <span className="muted">—</span>
+                      ) : (
+                        <div style={{ display: "grid", gap: 2, wordBreak: "break-word" }}>
+                          {Object.entries(log.metadata_json ?? {}).map(([key, value]) => (
+                            <div key={key}>
+                              <span className="muted">{METADATA_LABELS[key] ?? key}: </span>
+                              {metadataText(key, value)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="small mono muted">{log.ip_address ?? "—"}</td>
                   </tr>
