@@ -1031,6 +1031,28 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 });
 
 /* ------------------------------- Alarms ------------------------------------ */
+// A reload/update clears every alarm and can leave monitoring:false persisted.
+// Heartbeat ignores that flag but every violation listener requires it, so the
+// participant looks online while nothing is captured. Re-arm from server state.
+async function healLostMonitoring(session) {
+  const state = await fetchSessionState(session);
+  if (state?.status === "MONITORING" && state?.exam_status === "LIVE") {
+    await patchSession({
+      monitoring: true,
+      needsAttention: false,
+      examOpen: true,
+      lastKnownStatus: state.status,
+    });
+    await startCapture();
+    if (session.examTabId && (await tabExists(session.examTabId))) {
+      await ensureFocusWatcher(session.examTabId);
+    }
+    await updateBadge();
+    return { healed: true, state };
+  }
+  return { healed: false, state };
+}
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === FLUSH_ALARM) {
     await flushEvents();
@@ -1048,30 +1070,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // The alarm only keeps the badge/state fresh and re-opens the waiting room.
     const session = await readSession();
     if (!session?.participantSessionId || session.monitoring || session.ended) return;
-    const state = await fetchSessionState(session);
+    const { healed, state } = await healLostMonitoring(session);
+    if (healed) return;
     if (!state) return;
-    // Self-heal a lost monitoring flag. The server still has this participant
-    // MONITORING on a LIVE exam, but the extension's flag was reset (a
-    // re-registration or a transient events rejection clears it without stopping
-    // the heartbeat). Heartbeat ignores the flag while every violation listener
-    // requires it, so the participant would look online yet be silently
-    // unmonitored — copy-blocking still works because the guard is a content
-    // script. Re-arm capture. This only fires once the server already started
-    // monitoring, so it never auto-starts an exam before "Buka ujian" is pressed.
-    if (state.status === "MONITORING" && state.exam_status === "LIVE") {
-      await patchSession({
-        monitoring: true,
-        needsAttention: false,
-        examOpen: true,
-        lastKnownStatus: state.status,
-      });
-      await startCapture();
-      if (session.examTabId && (await tabExists(session.examTabId))) {
-        await ensureFocusWatcher(session.examTabId);
-      }
-      await updateBadge();
-      return;
-    }
     const examOpen =
       state.exam_status === "LIVE" &&
       ["INITIALIZING", "READY", "REGISTERED", "WAITING"].includes(state.status);
@@ -1377,8 +1378,20 @@ async function recoverAfterBrowserRestart() {
     }
   }
 
-  // Not monitoring (or no form URL): send the participant back to the page
-  // where they can press "Buka ujian" again.
+  // Not monitoring (or no form URL). A reload/update mid-exam clears the alarms
+  // and can leave the flag lost while the server still monitors this participant:
+  // re-arm immediately instead of waiting for the (now cleared) WATCH_ALARM.
+  const { healed } = await healLostMonitoring(session);
+  if (healed) {
+    if (!tabAlive && session.googleFormsUrl) {
+      const tab = await chrome.tabs.create({ url: session.googleFormsUrl, active: true });
+      await patchSession({ examTabId: tab.id ?? null, pendingWarning: null });
+      await ensureFocusWatcher(tab.id);
+    }
+    return;
+  }
+  // Otherwise send the participant back to the page where they can press
+  // "Buka ujian" again, and keep the watch alarm running for a later heal.
   if (!tabAlive) {
     await openParticipantPage();
   }
@@ -1387,7 +1400,14 @@ async function recoverAfterBrowserRestart() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await updateBadge();
+  // Installing, updating or reloading the extension clears every alarm and stops
+  // capture. Re-arm exactly like a browser restart so an active exam keeps
+  // detecting violations instead of going silently unmonitored.
+  try {
+    await recoverAfterBrowserRestart();
+  } catch {
+    await updateBadge();
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {

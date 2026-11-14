@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ExamGuard — Exam Session Monitor",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Membuka halaman peserta ExamGuard dan memantau aktivitas browser selama ujian berlangsung.",
   "minimum_chrome_version": "114",
   "permissions": ["tabs", "storage", "alarms", "scripting"],
