@@ -321,3 +321,72 @@ def test_participant_session_has_no_end_message_before_start(admin_client: TestC
     session = response.json()
     assert session["ends_at"] is None
     assert "Waktu ujian telah berakhir." not in session["messages"]
+
+
+def test_clipboard_attempts_create_incidents(admin_client: TestClient) -> None:
+    """Copy/paste attempts from the extension become reviewable incidents."""
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+
+    response = admin_client.post(
+        f"/api/v1/participant/events?participant_session_id={ps_id}",
+        json=[
+            {
+                "client_event_id": "clip-copy-1",
+                "event_type": "COPY_ATTEMPT",
+                "page_url": "https://docs.google.com/forms/d/e/abc/viewform",
+                "metadata": {"reason": "clipboard_blocked"},
+            },
+            {
+                "client_event_id": "clip-paste-1",
+                "event_type": "PASTE_ATTEMPT",
+                "page_url": "https://docs.google.com/forms/d/e/abc/viewform",
+                "metadata": {"reason": "clipboard_blocked"},
+            },
+        ],
+        headers={"X-Participant-Token": token},
+    )
+    assert response.status_code == 201, response.text
+    stored = response.json()
+    # Bursts inside the correlation window merge into one episode.
+    assert len({event["incident_id"] for event in stored}) == 1
+    assert all(event["incident_id"] for event in stored)
+
+    incidents = admin_client.get(f"/api/v1/exams/{exam['id']}/incidents").json()
+    assert len(incidents) == 1
+    assert incidents[0]["incident_type"] == "COPY_ATTEMPT"
+    assert incidents[0]["event_count"] == 2
+    assert incidents[0]["review_status"] == "UNREVIEWED"
+
+
+def test_clipboard_episode_closes_and_reopens(admin_client: TestClient) -> None:
+    """FOCUS_RESTORED closes the clipboard episode; a later cut starts a new one."""
+    exam = create_exam(admin_client)
+    ps_id, token = _start_monitoring(admin_client, exam, "Alek Nurhabib")
+    url = f"/api/v1/participant/events?participant_session_id={ps_id}"
+    headers = {"X-Participant-Token": token}
+
+    admin_client.post(
+        url,
+        json=[{"client_event_id": "clip-a", "event_type": "COPY_ATTEMPT"}],
+        headers=headers,
+    )
+    admin_client.post(
+        url,
+        json=[{"client_event_id": "clip-close", "event_type": "FOCUS_RESTORED"}],
+        headers=headers,
+    )
+    admin_client.post(
+        url,
+        json=[{"client_event_id": "clip-b", "event_type": "CUT_ATTEMPT"}],
+        headers=headers,
+    )
+
+    incidents = admin_client.get(f"/api/v1/exams/{exam['id']}/incidents").json()
+    assert len(incidents) == 2
+    assert {incident["incident_type"] for incident in incidents} == {
+        "COPY_ATTEMPT",
+        "CUT_ATTEMPT",
+    }
+    closed = next(i for i in incidents if i["incident_type"] == "COPY_ATTEMPT")
+    assert closed["ended_at"] is not None

@@ -49,6 +49,9 @@ const PRIORITY_EVENTS = new Set([
   "FOCUS_LOST",
   "FOCUS_RESTORED",
   "WINDOW_MINIMIZED",
+  "COPY_ATTEMPT",
+  "CUT_ATTEMPT",
+  "PASTE_ATTEMPT",
 ]);
 
 /** Local events that should raise a warning as soon as the participant is back
@@ -828,7 +831,7 @@ async function ensureFocusWatcher(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["focus-watcher.js"],
+      files: ["focus-watcher.js", "copy-guard.js"],
     });
     return true;
   } catch {
@@ -1052,6 +1055,10 @@ const RELAYED_TYPES = new Set([
   // than chrome.windows.onFocusChanged.
   "focus:focus_lost",
   "focus:focus_restored",
+  // Copy guard on the exam page: blocked clipboard attempts become incidents.
+  "clipboard:copy_attempt",
+  "clipboard:cut_attempt",
+  "clipboard:paste_attempt",
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1195,6 +1202,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (current?.pendingWarning && current.examTabId) {
           await showPendingWarning(current.examTabId);
         }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "clipboard:copy_attempt":
+      case "clipboard:cut_attempt":
+      case "clipboard:paste_attempt": {
+        const session = await readSession();
+        if (!session?.monitoring) {
+          sendResponse({ ok: false, reason: "not_monitoring" });
+          break;
+        }
+        if (sender.tab?.id !== session.examTabId || sender.frameId !== 0) {
+          sendResponse({ ok: false, reason: "not_exam_page" });
+          break;
+        }
+        // Deliberately not a VIOLATION_EVENTS member: no focus-loss overlay
+        // for clipboard attempts, the exam flow stays uninterrupted.
+        await queueEvent(
+          message.type.slice("clipboard:".length).toUpperCase(),
+          {
+            tabId: session.examTabId ?? null,
+            url: message.payload?.url ?? session.googleFormsUrl ?? null,
+            metadata: { reason: "clipboard_blocked" },
+          },
+          { priority: true },
+        );
         sendResponse({ ok: true });
         break;
       }

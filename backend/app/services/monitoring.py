@@ -20,6 +20,9 @@ INCIDENT_TYPES = {
     "WINDOW_MINIMIZED",
     "NAVIGATION",
     "TAB_CLOSED",
+    "COPY_ATTEMPT",
+    "CUT_ATTEMPT",
+    "PASTE_ATTEMPT",
 }
 
 # Events that close an open episode instead of opening a new one.
@@ -36,6 +39,9 @@ EVENT_SUMMARIES = {
     "NAVIGATION": "Navigasi halaman",
     "CONNECTION_LOST": "Koneksi terputus",
     "FOCUS_RESTORED": "Fokus kembali",
+    "COPY_ATTEMPT": "Percobaan menyalin teks",
+    "CUT_ATTEMPT": "Percobaan memotong teks",
+    "PASTE_ATTEMPT": "Percobaan menempel teks",
 }
 
 

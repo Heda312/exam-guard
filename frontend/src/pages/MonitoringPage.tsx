@@ -26,6 +26,9 @@ const EVENT_LABELS: Record<string, string> = {
   NAVIGATION: "Navigasi",
   CONNECTION_LOST: "Koneksi terputus",
   FOCUS_RESTORED: "Fokus kembali",
+  COPY_ATTEMPT: "Percobaan copy",
+  CUT_ATTEMPT: "Percobaan cut",
+  PASTE_ATTEMPT: "Percobaan paste",
 };
 
 const REVIEW_LABELS: Record<string, string> = {

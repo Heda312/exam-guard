@@ -303,6 +303,9 @@ class MonitoringEventIn(BaseModel):
         "NAVIGATION",
         "CONNECTION_LOST",
         "FOCUS_RESTORED",
+        "COPY_ATTEMPT",
+        "CUT_ATTEMPT",
+        "PASTE_ATTEMPT",
     ]
     client_timestamp: Optional[datetime] = None
     tab_id: Optional[int] = None
