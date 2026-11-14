@@ -1050,6 +1050,28 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!session?.participantSessionId || session.monitoring || session.ended) return;
     const state = await fetchSessionState(session);
     if (!state) return;
+    // Self-heal a lost monitoring flag. The server still has this participant
+    // MONITORING on a LIVE exam, but the extension's flag was reset (a
+    // re-registration or a transient events rejection clears it without stopping
+    // the heartbeat). Heartbeat ignores the flag while every violation listener
+    // requires it, so the participant would look online yet be silently
+    // unmonitored — copy-blocking still works because the guard is a content
+    // script. Re-arm capture. This only fires once the server already started
+    // monitoring, so it never auto-starts an exam before "Buka ujian" is pressed.
+    if (state.status === "MONITORING" && state.exam_status === "LIVE") {
+      await patchSession({
+        monitoring: true,
+        needsAttention: false,
+        examOpen: true,
+        lastKnownStatus: state.status,
+      });
+      await startCapture();
+      if (session.examTabId && (await tabExists(session.examTabId))) {
+        await ensureFocusWatcher(session.examTabId);
+      }
+      await updateBadge();
+      return;
+    }
     const examOpen =
       state.exam_status === "LIVE" &&
       ["INITIALIZING", "READY", "REGISTERED", "WAITING"].includes(state.status);
