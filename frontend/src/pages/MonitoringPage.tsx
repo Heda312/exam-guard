@@ -29,6 +29,7 @@ const EVENT_LABELS: Record<string, string> = {
   COPY_ATTEMPT: "Percobaan copy",
   CUT_ATTEMPT: "Percobaan cut",
   PASTE_ATTEMPT: "Percobaan paste",
+  GUARD_TAMPERED: "Guard diganggu",
 };
 
 const REVIEW_LABELS: Record<string, string> = {

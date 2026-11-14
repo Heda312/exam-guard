@@ -306,6 +306,7 @@ class MonitoringEventIn(BaseModel):
         "COPY_ATTEMPT",
         "CUT_ATTEMPT",
         "PASTE_ATTEMPT",
+        "GUARD_TAMPERED",
     ]
     client_timestamp: Optional[datetime] = None
     tab_id: Optional[int] = None

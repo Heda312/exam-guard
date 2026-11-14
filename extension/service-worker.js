@@ -52,6 +52,7 @@ const PRIORITY_EVENTS = new Set([
   "COPY_ATTEMPT",
   "CUT_ATTEMPT",
   "PASTE_ATTEMPT",
+  "GUARD_TAMPERED",
 ]);
 
 /** Local events that should raise a warning as soon as the participant is back
@@ -815,6 +816,19 @@ async function showOverlayOnExamTab(kind) {
   return showOverlay(session.examTabId, kind);
 }
 
+/** Selection-blocking stylesheet for the copy guard, injected at USER origin.
+ *  USER-origin !important wins over any author-origin !important, including
+ *  the inline `user-select:text!important` that "enable copy" extensions
+ *  inject, so question text stays unselectable even if their CSS loads later.
+ *  Editable fields are pinned back to `text`: user-select:none on ancestors
+ *  otherwise makes `auto` inputs/textarea unselectable too, which would stop
+ *  participants from selecting their own answers. */
+const COPY_GUARD_CSS =
+  '*:not(input):not(textarea):not([contenteditable="true"]):not([contenteditable=""]) {' +
+  " -webkit-user-select: none !important; user-select: none !important; }" +
+  'input, textarea, [contenteditable="true"], [contenteditable=""] {' +
+  " -webkit-user-select: text !important; user-select: text !important; }";
+
 /**
  * Make sure the page-level focus watcher is running in the exam tab.
  *
@@ -825,6 +839,16 @@ async function showOverlayOnExamTab(kind) {
  *
  * Injection is idempotent: focus-watcher.js guards with a global flag.
  */
+
+async function ensureCopyGuardCss(tabId) {
+  if (!tabId || !(await tabExists(tabId))) return;
+  try {
+    await chrome.scripting.insertCSS({ target: { tabId }, origin: "USER", css: COPY_GUARD_CSS });
+  } catch {
+    /* restricted page */
+  }
+}
+
 async function ensureFocusWatcher(tabId) {
   if (!tabId) return false;
   if (!(await tabExists(tabId))) return false;
@@ -833,6 +857,7 @@ async function ensureFocusWatcher(tabId) {
       target: { tabId },
       files: ["focus-watcher.js", "copy-guard.js"],
     });
+    await ensureCopyGuardCss(tabId);
     return true;
   } catch {
     // Restricted page (chrome://, PDF viewer) — nothing to observe there.
@@ -1059,6 +1084,8 @@ const RELAYED_TYPES = new Set([
   "clipboard:copy_attempt",
   "clipboard:cut_attempt",
   "clipboard:paste_attempt",
+  // Copy guard probe: another extension neutralised the guard on the page.
+  "guard_tampered",
 ]);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1228,6 +1255,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           },
           { priority: true },
         );
+        sendResponse({ ok: true });
+        break;
+      }
+      case "guard_tampered": {
+        const session = await readSession();
+        if (!session?.monitoring) {
+          sendResponse({ ok: false, reason: "not_monitoring" });
+          break;
+        }
+        if (sender.tab?.id !== session.examTabId || sender.frameId !== 0) {
+          sendResponse({ ok: false, reason: "not_exam_page" });
+          break;
+        }
+        // Another extension defeated the guard: the proctor must see it even
+        // though no clipboard event got through to report a normal attempt.
+        await patchSession({ needsAttention: true, lastError: "copy_guard_tampered" });
+        await queueEvent(
+          "GUARD_TAMPERED",
+          {
+            tabId: session.examTabId ?? null,
+            url: message.payload?.url ?? session.googleFormsUrl ?? null,
+            metadata: { reason: "copy_guard_tampered", seen: message.payload?.seen ?? [] },
+          },
+          { priority: true },
+        );
+        await updateBadge();
         sendResponse({ ok: true });
         break;
       }

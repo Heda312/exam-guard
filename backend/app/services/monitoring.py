@@ -23,6 +23,7 @@ INCIDENT_TYPES = {
     "COPY_ATTEMPT",
     "CUT_ATTEMPT",
     "PASTE_ATTEMPT",
+    "GUARD_TAMPERED",
 }
 
 # Events that close an open episode instead of opening a new one.
@@ -42,6 +43,7 @@ EVENT_SUMMARIES = {
     "COPY_ATTEMPT": "Percobaan menyalin teks",
     "CUT_ATTEMPT": "Percobaan memotong teks",
     "PASTE_ATTEMPT": "Percobaan menempel teks",
+    "GUARD_TAMPERED": "Pemantauan diganggu extension lain",
 }
 
 
